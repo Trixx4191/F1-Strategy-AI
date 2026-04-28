@@ -1,0 +1,12 @@
+fastf1>=3.3.0
+pandas>=2.0.0
+numpy>=1.26.0
+scikit-learn>=1.4.0
+scipy>=1.12.0
+matplotlib>=3.8.0
+seaborn>=0.13.0
+streamlit>=1.32.0
+python-dotenv>=1.0.0
+pytest>=8.0.0
+jupyterlab>=4.0.0
+tqdm>=4.66.0

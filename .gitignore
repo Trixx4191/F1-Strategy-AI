@@ -1,0 +1,73 @@
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+wheels/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+.env
+
+# ── Environment variables ─────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.env
+
+# ── FastF1 cache (large — regenerated automatically) ─────────────────────────
+data/cache/
+data/raw/
+data/processed/
+
+# ── Outputs (generated files) ─────────────────────────────────────────────────
+outputs/*.png
+outputs/*.pdf
+outputs/*.csv
+outputs/*.html
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── IDEs ─────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Test & coverage ───────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ── Streamlit ─────────────────────────────────────────────────────────────────
+.streamlit/secrets.toml
+
+# ── Backup files ─────────────────────────────────────────────────────────────
+*.bak
+*.orig
+
+# ── Background images (optional — users can supply their own) ─────────────────
+src/visualisation/F1_RED.jpeg
+src/visualisation/JACK_TEAM_RACING.jpeg
