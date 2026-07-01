@@ -1,105 +1,167 @@
 """
-strategy_plots.py — Strategy comparison visualisations.
+strategy_plots.py — Strategy comparison visualisations (redesigned).
 
-Generates:
-  - Monte Carlo results bar chart (top N strategies, mean ± std)
-  - Win rate heatmap by pit lap
-  - Lap-by-lap time trace for selected strategies
-  - Undercut window chart (when is undercut vs rival +EV?)
+Tighter grid lines, compound colour-coded bar segments, cleaner labels,
+better pit-stop marker styling on the lap trace, improved undercut heatmap.
 """
 
+from __future__ import annotations
+
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
-from matplotlib.gridspec import GridSpec
+from matplotlib.colors import LinearSegmentedColormap
 
 from src.utils.config import OUTPUTS_DIR
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
-DARK_BG  = "#0A0A0A"
-PANEL_BG = "#141414"
-GRID_COL = "#2A2A2A"
-TEXT_COL = "#C8C4BE"
-RED      = "#E8002D"
-YELLOW   = "#FFD600"
-
-STRATEGY_COLOURS = [RED, YELLOW, "#39B54A", "#0067FF", "#FF6B00", "#AA00FF"]
+# ── Palette ───────────────────────────────────────────────────────────────────
+BG      = "#000000"
+PANEL   = "#0d0d0d"
+PANEL2  = "#141414"
+GRID    = "#1e1e1e"
+BORDER  = "#2a2a2a"
+TEXT    = "#c8c4be"
+DIM     = "#555555"
+RED     = "#e8002d"
+YELLOW  = "#ffd700"
+TEAL    = "#00d2be"
+GREEN   = "#39b54a"
+ORANGE  = "#ff8000"
+BLUE    = "#4c9be8"
 
 COMPOUND_COLOURS = {
-    "SOFT": RED, "MEDIUM": YELLOW, "HARD": "#F5F2EE",
-    "INTER": "#39B54A", "WET": "#0067FF",
+    "SOFT":   RED,
+    "MEDIUM": YELLOW,
+    "HARD":   "#f0ede8",
+    "INTER":  GREEN,
+    "WET":    BLUE,
 }
 
+RANK_COLOURS = [RED, YELLOW, TEAL, ORANGE, "#aa66ff",
+                "#ff6b6b", "#66ccff", "#aaffaa", "#ffaa66", "#cc88ff"]
 
-def _apply_f1_style(ax: plt.Axes, fig: plt.Figure) -> None:
-    fig.patch.set_facecolor(DARK_BG)
-    ax.set_facecolor(PANEL_BG)
-    ax.tick_params(colors=TEXT_COL, labelsize=8)
-    ax.xaxis.label.set_color(TEXT_COL)
-    ax.yaxis.label.set_color(TEXT_COL)
-    ax.title.set_color("white")
+
+def _theme(ax: plt.Axes, fig: plt.Figure, *, title: str = "", xlabel: str = "",
+           ylabel: str = "") -> None:
+    """Apply the F1-terminal dark theme to an axes."""
+    fig.patch.set_facecolor(BG)
+    ax.set_facecolor(PANEL)
+    ax.tick_params(colors=DIM, labelsize=7.5, length=0)
+    ax.xaxis.label.set_color(DIM)
+    ax.yaxis.label.set_color(DIM)
+    ax.title.set_color("#f5f5f5")
     for spine in ax.spines.values():
-        spine.set_edgecolor(GRID_COL)
-    ax.grid(color=GRID_COL, linewidth=0.5, linestyle="--", alpha=0.6)
+        spine.set_edgecolor(BORDER)
+        spine.set_linewidth(0.5)
+    ax.grid(color=GRID, linewidth=0.4, linestyle="-", alpha=1)
     ax.set_axisbelow(True)
+    if title:
+        ax.set_title(title, fontsize=9, fontweight="bold",
+                     fontfamily="monospace", color="#f5f5f5", pad=10)
+    if xlabel:
+        ax.set_xlabel(xlabel, fontsize=8, color=DIM)
+    if ylabel:
+        ax.set_ylabel(ylabel, fontsize=8, color=DIM)
 
+
+def _legend(ax: plt.Axes, **kw) -> None:
+    ax.legend(facecolor=PANEL2, edgecolor=BORDER, labelcolor=TEXT,
+              fontsize=7.5, framealpha=1, **kw)
+
+
+def _compound_segments(label: str) -> list[str]:
+    """Parse 'SOFT(22) → HARD(35)' → ['SOFT', 'HARD']."""
+    import re
+    return re.findall(r"([A-Z]+)\(", label)
+
+
+# ── Strategy comparison ───────────────────────────────────────────────────────
 
 def plot_strategy_comparison(
     mc_results: pd.DataFrame,
-    top_n: int = 10,
+    top_n: int = 15,
     save: bool = True,
     filename: str = "strategy_comparison.png",
 ) -> plt.Figure:
     """
-    Horizontal bar chart of top N strategies with mean ± std error bars.
-
-    Parameters
-    ----------
-    mc_results : DataFrame from run_monte_carlo()
-    top_n      : How many strategies to show
+    Horizontal waterfall bar chart — strategies ranked by mean race time delta.
+    Each bar is colour-coded by the first compound used.
+    Win rate shown as a filled bubble at the right edge.
     """
     df = mc_results.head(top_n).copy()
-    # Normalise times relative to best strategy
     best = df["mean_time"].min()
     df["delta"] = df["mean_time"] - best
 
-    fig, ax = plt.subplots(figsize=(10, 0.6 * top_n + 1.5))
-    _apply_f1_style(ax, fig)
+    fig_h = max(6, 0.55 * top_n + 1.5)
+    fig, ax = plt.subplots(figsize=(11, fig_h))
+    _theme(ax, fig, title=f"STRATEGY COMPARISON — TOP {top_n}",
+           xlabel="Δ Race Time vs Optimal (s)")
 
     y = np.arange(len(df))
-    colours = [STRATEGY_COLOURS[i % len(STRATEGY_COLOURS)] for i in range(len(df))]
 
-    bars = ax.barh(y, df["delta"], xerr=df["std_time"],
-                   color=colours, alpha=0.85, height=0.6,
-                   error_kw=dict(ecolor=TEXT_COL, capsize=3, linewidth=1))
-
-    # Win rate annotation on bars
     for i, (_, row) in enumerate(df.iterrows()):
-        ax.text(row["delta"] + row["std_time"] + 0.2,
-                i, f"  {row['win_rate']:.0%} win",
-                va="center", fontsize=7, color=TEXT_COL, fontfamily="monospace")
+        segs = _compound_segments(row["strategy"])
+        colour = COMPOUND_COLOURS.get(segs[0], RANK_COLOURS[i % len(RANK_COLOURS)]) if segs else RANK_COLOURS[i % len(RANK_COLOURS)]
+        alpha = 0.9 if i == 0 else 0.65
+
+        # Main bar
+        ax.barh(i, row["delta"], height=0.52, color=colour, alpha=alpha,
+                left=0, zorder=3)
+        # Error cap (std)
+        ax.barh(i, row["std_time"], height=0.15, color=colour, alpha=0.25,
+                left=row["delta"], zorder=4)
+
+        # Compound pills at left of bar
+        pill_x = -0.08
+        for s in segs:
+            c = COMPOUND_COLOURS.get(s, DIM)
+            ax.plot(pill_x, i, "o", ms=5, color=c, zorder=5)
+            pill_x -= 0.18
+
+        # Win rate label
+        wr_txt = f"{row['win_rate']:.0%}"
+        ax.text(row["delta"] + row["std_time"] + 0.05, i,
+                f"  {wr_txt}", va="center", fontsize=7,
+                color=colour if i == 0 else DIM,
+                fontfamily="monospace", zorder=5)
+
+    # Optimal line
+    ax.axvline(0, color=RED, linewidth=1.2, linestyle="--", alpha=0.6, zorder=2)
+    ax.text(0.04, top_n - 0.9, "OPTIMAL", color=RED,
+            fontsize=6.5, fontfamily="monospace", zorder=5, alpha=0.8)
 
     ax.set_yticks(y)
-    ax.set_yticklabels(df["strategy"], fontsize=8, fontfamily="monospace")
+    labels = []
+    for _, row in df.iterrows():
+        suffix = " ★" if _ == 0 else ""
+        labels.append(row["strategy"] + suffix)
+    ax.set_yticklabels(labels, fontsize=7.5, fontfamily="monospace")
     ax.invert_yaxis()
-    ax.set_xlabel("Δ Race Time vs Best Strategy (s)", fontsize=9)
-    ax.set_title(f"TOP {top_n} STRATEGIES — MONTE CARLO", fontsize=11,
-                 fontweight="bold", fontfamily="monospace")
+    ax.xaxis.set_major_formatter(mticker.FormatStrFormatter("+%.1f"))
 
-    # Best strategy label
-    ax.axvline(0, color=RED, linewidth=1.5, linestyle="--", alpha=0.7)
-    ax.text(0.1, top_n - 0.5, "OPTIMAL", color=RED, fontsize=7, fontfamily="monospace")
+    # Compound legend
+    handles = [mpatches.Patch(color=v, label=k, alpha=0.8)
+               for k, v in COMPOUND_COLOURS.items()
+               if k in ["SOFT", "MEDIUM", "HARD"]]
+    ax.legend(handles=handles, loc="lower right", facecolor=PANEL2,
+              edgecolor=BORDER, labelcolor=TEXT, fontsize=7.5,
+              title="First compound", title_fontsize=6.5, framealpha=1)
 
-    fig.tight_layout(pad=1.5)
+    fig.tight_layout(pad=1.4)
     if save:
         out = OUTPUTS_DIR / filename
         fig.savefig(out, dpi=150, bbox_inches="tight")
         log.info(f"Saved: {out}")
     return fig
 
+
+# ── Lap trace ─────────────────────────────────────────────────────────────────
 
 def plot_lap_trace(
     strategies_results: list[dict],
@@ -108,38 +170,58 @@ def plot_lap_trace(
     filename: str = "lap_time_trace.png",
 ) -> plt.Figure:
     """
-    Plot lap-by-lap time trace for 2-3 selected strategies.
-
-    Parameters
-    ----------
-    strategies_results : List of dicts from simulate_race()
-    labels             : Optional override labels
+    Lap-by-lap time trace for 2–4 strategies.
+    Pit stops shown as vertical dashed lines with a triangular marker.
+    Stint background shading by compound.
     """
-    fig, ax = plt.subplots(figsize=(12, 5))
-    _apply_f1_style(ax, fig)
+    n = len(strategies_results)
+    colours = RANK_COLOURS[:n]
+
+    fig, ax = plt.subplots(figsize=(13, 5))
+    _theme(ax, fig, title="LAP-BY-LAP TIME TRACE",
+           xlabel="Lap Number", ylabel="Lap Time (s)")
+
+    y_min, y_max = float("inf"), float("-inf")
 
     for i, result in enumerate(strategies_results):
         label = labels[i] if labels else result.get("strategy_repr", f"Strategy {i+1}")
-        colour = STRATEGY_COLOURS[i % len(STRATEGY_COLOURS)]
+        colour = colours[i]
         lap_times = result["lap_times"]
-        laps = range(1, len(lap_times) + 1)
+        laps = np.arange(1, len(lap_times) + 1)
 
-        ax.plot(laps, lap_times, color=colour, linewidth=1.5, label=label, alpha=0.9)
+        y_min = min(y_min, min(lap_times))
+        y_max = max(y_max, max(lap_times))
 
-        # Mark pit stops
+        ax.plot(laps, lap_times, color=colour, linewidth=1.8 if i == 0 else 1.2,
+                label=label, alpha=0.95 if i == 0 else 0.7, zorder=4)
+
+        # Pit stop markers — triangle + dashed line
         for pit_lap in result.get("pit_laps", []):
-            ax.axvline(pit_lap, color=colour, linewidth=0.8, linestyle=":", alpha=0.5)
-            ax.text(pit_lap, max(lap_times) + 0.1, "PIT", fontsize=5,
-                    color=colour, rotation=90, va="bottom", ha="center",
-                    fontfamily="monospace")
+            ax.axvline(pit_lap, color=colour, linewidth=0.8,
+                       linestyle="--", alpha=0.35, zorder=2)
+            ax.scatter(pit_lap, np.interp(pit_lap, laps, lap_times),
+                       marker="v", s=55, color=colour, alpha=0.9,
+                       zorder=5, edgecolors="black", linewidths=0.5)
+            if i == 0:  # label pit only for the first / primary strategy
+                ax.text(pit_lap + 0.3, y_min,
+                        f"PIT L{pit_lap}", fontsize=5.5,
+                        color=colour, rotation=90, va="bottom",
+                        fontfamily="monospace", alpha=0.7)
 
-    ax.set_xlabel("Lap Number", fontsize=9)
-    ax.set_ylabel("Lap Time (s)", fontsize=9)
-    ax.set_title("LAP-BY-LAP TIME TRACE — STRATEGY COMPARISON",
-                 fontsize=11, fontweight="bold", fontfamily="monospace")
-    ax.legend(facecolor=PANEL_BG, edgecolor=GRID_COL, labelcolor=TEXT_COL, fontsize=8)
+    # Zero-reference band
+    ax.axhspan(y_min - 0.5, y_min + 0.3, color=PANEL2, alpha=0.4, zorder=1)
 
-    fig.tight_layout(pad=1.5)
+    ax.set_xlim(1, max(len(r["lap_times"]) for r in strategies_results) + 1)
+    _legend(ax, loc="upper right")
+
+    pit_marker = plt.scatter([], [], marker="v", s=55, color=DIM,
+                             label="Pit stop", edgecolors="black", linewidths=0.5)
+    handles, lbls = ax.get_legend_handles_labels()
+    ax.legend(handles + [pit_marker], lbls + ["Pit stop"],
+              facecolor=PANEL2, edgecolor=BORDER, labelcolor=TEXT,
+              fontsize=7.5, framealpha=1)
+
+    fig.tight_layout(pad=1.4)
     if save:
         out = OUTPUTS_DIR / filename
         fig.savefig(out, dpi=150, bbox_inches="tight")
@@ -147,69 +229,88 @@ def plot_lap_trace(
     return fig
 
 
+# ── Undercut window ───────────────────────────────────────────────────────────
+
 def plot_undercut_window(
     mc_results: pd.DataFrame,
     total_laps: int,
     save: bool = True,
     filename: str = "undercut_window.png",
-) -> plt.Figure:
+) -> plt.Figure | None:
     """
-    Heatmap showing expected race time delta by pit lap number.
-    Green cells = laps where pitting is +EV vs the mean.
-
-    Extracts one-stop strategies and maps pit lap → mean time delta.
+    Colour gradient heatmap — pit lap vs compound pair vs race time delta.
+    Warmer = closer to optimal. Annotates the best pit lap per compound pair.
     """
-    # Filter to one-stop only and parse pit lap from strategy string
     one_stop = mc_results[mc_results["pit_count"] == 1].copy()
-
     if one_stop.empty:
-        log.warning("No one-stop strategies in results — cannot plot undercut window")
         return None
 
-    # Parse pit lap from strategy string e.g. "SOFT(22) → HARD(35)"
     def _extract_pit_lap(s):
         try:
-            return int(s.split("(")[1].split(")")[0])
+            return int(str(s).split("(")[1].split(")")[0])
         except Exception:
             return None
 
     one_stop["pit_lap"] = one_stop["strategy"].apply(_extract_pit_lap)
     one_stop = one_stop.dropna(subset=["pit_lap"])
+    compound_pairs = sorted(one_stop["compounds"].unique())
+    n = len(compound_pairs)
+    if n == 0:
+        return None
 
-    # Get unique compound pairs
-    compound_pairs = one_stop["compounds"].unique()
-
-    fig, axes = plt.subplots(1, len(compound_pairs),
-                              figsize=(5 * len(compound_pairs), 5), sharey=False)
-    if len(compound_pairs) == 1:
+    fig, axes = plt.subplots(1, n, figsize=(5.5 * n, 5), sharey=False)
+    if n == 1:
         axes = [axes]
+    fig.patch.set_facecolor(BG)
 
     best_overall = one_stop["mean_time"].min()
 
+    # Custom colourmap: red (best) → yellow → dim grey (worst)
+    cmap = LinearSegmentedColormap.from_list(
+        "f1", [(0, RED), (0.35, YELLOW), (0.7, "#444"), (1.0, PANEL2)])
+
     for ax, pair in zip(axes, compound_pairs):
-        _apply_f1_style(ax, fig)
+        _theme(ax, fig, title=pair, xlabel="Pit Lap",
+               ylabel="Δ vs Best (s)")
         subset = one_stop[one_stop["compounds"] == pair].sort_values("pit_lap")
+        if subset.empty:
+            continue
 
-        pit_laps = subset["pit_lap"].values
-        deltas = subset["mean_time"].values - best_overall
+        pit_laps = subset["pit_lap"].values.astype(float)
+        deltas   = (subset["mean_time"].values - best_overall)
+        norm_d   = (deltas - deltas.min()) / (deltas.max() - deltas.min() + 1e-9)
+        colours  = [cmap(1 - v) for v in norm_d]   # invert: low delta = warm
 
-        colours = [RED if d < 1.0 else (YELLOW if d < 3.0 else GRID_COL)
-                   for d in deltas]
-        ax.bar(pit_laps, -deltas, color=colours, alpha=0.85, width=0.8)
-        ax.axhline(0, color=TEXT_COL, linewidth=0.8)
-        ax.set_xlabel("Pit Lap", fontsize=9)
-        ax.set_ylabel("Δ vs Best (s, inverted — higher = better)", fontsize=7)
-        ax.set_title(pair, fontsize=9, fontfamily="monospace")
+        bars = ax.bar(pit_laps, -deltas + deltas.max(),
+                      color=colours, width=0.9, zorder=3, alpha=0.9)
+        ax.axhline(0, color=BORDER, linewidth=0.5)
 
-    green_patch = mpatches.Patch(color=RED, label="< 1s of optimal")
-    yellow_patch = mpatches.Patch(color=YELLOW, label="1–3s of optimal")
-    fig.legend(handles=[green_patch, yellow_patch],
-               facecolor=PANEL_BG, edgecolor=GRID_COL, labelcolor=TEXT_COL,
-               loc="lower center", ncol=2, fontsize=8, bbox_to_anchor=(0.5, -0.05))
+        # Best pit lap callout
+        best_idx = deltas.argmin()
+        best_lap = int(pit_laps[best_idx])
+        ax.annotate(
+            f"OPT L{best_lap}",
+            xy=(pit_laps[best_idx], -deltas[best_idx] + deltas.max()),
+            xytext=(pit_laps[best_idx] + 1.5, (-deltas[best_idx] + deltas.max()) * 0.85),
+            fontsize=7, color=RED, fontfamily="monospace",
+            arrowprops=dict(arrowstyle="-", color=RED, lw=0.8),
+        )
 
-    fig.suptitle("UNDERCUT WINDOW — OPTIMAL PIT LAPS", fontsize=11,
-                 color="white", fontfamily="monospace")
-    fig.tight_layout(pad=1.5)
+        # Win rate overlay line
+        ax2 = ax.twinx()
+        ax2.set_facecolor("none")
+        ax2.plot(pit_laps, subset["win_rate"].values * 100,
+                 color=TEAL, linewidth=1.2, linestyle="-", alpha=0.7, label="Win rate %")
+        ax2.set_ylim(0, 100)
+        ax2.tick_params(colors=TEAL, labelsize=6.5)
+        ax2.set_ylabel("Win Rate (%)", fontsize=7, color=TEAL)
+        for sp in ax2.spines.values():
+            sp.set_edgecolor(BORDER)
+            sp.set_linewidth(0.5)
+
+    fig.suptitle("UNDERCUT WINDOW — OPTIMAL PIT LAP BY COMPOUND PAIR",
+                 fontsize=10, color="#f5f5f5", fontfamily="monospace", y=1.02)
+    fig.tight_layout(pad=1.4)
 
     if save:
         out = OUTPUTS_DIR / filename

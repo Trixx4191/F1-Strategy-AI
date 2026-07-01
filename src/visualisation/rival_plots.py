@@ -1,17 +1,14 @@
 """
-rival_plots.py — Visualisations for undercut / overcut rival analysis.
+rival_plots.py — Rival analysis visualisations (redesigned).
 
-Generates:
-  - Undercut EV timeline (per-lap recommendation with confidence bands)
-  - Gap-to-rival trace (lap-by-lap position delta across race)
-  - Head-to-head strategy comparison (our sim vs rival sim)
-  - Win rate bar: probability of finishing ahead for each undercut lap
+Cleaner EV timeline, gap trace with sector shading, proper H2H bar chart.
 """
 
 from __future__ import annotations
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
 
@@ -20,28 +17,43 @@ from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
-DARK_BG  = "#0A0A0A"
-PANEL_BG = "#141414"
-GRID_COL = "#2A2A2A"
-TEXT_COL = "#C8C4BE"
-RED      = "#E8002D"
-YELLOW   = "#FFD600"
-GREEN    = "#39B54A"
-BLUE     = "#0067FF"
+BG     = "#000000"
+PANEL  = "#0d0d0d"
+PANEL2 = "#141414"
+GRID   = "#1e1e1e"
+BORDER = "#2a2a2a"
+TEXT   = "#c8c4be"
+DIM    = "#555555"
+RED    = "#e8002d"
+YELLOW = "#ffd700"
+TEAL   = "#00d2be"
+GREEN  = "#39b54a"
+ORANGE = "#ff8000"
+BLUE   = "#4c9be8"
 
 
-def _apply_f1_style(ax: plt.Axes, fig: plt.Figure) -> None:
-    fig.patch.set_facecolor(DARK_BG)
-    ax.set_facecolor(PANEL_BG)
-    ax.tick_params(colors=TEXT_COL, labelsize=8)
-    ax.xaxis.label.set_color(TEXT_COL)
-    ax.yaxis.label.set_color(TEXT_COL)
-    ax.title.set_color("white")
-    for spine in ax.spines.values():
-        spine.set_edgecolor(GRID_COL)
-    ax.grid(color=GRID_COL, linewidth=0.5, linestyle="--", alpha=0.6)
+def _theme(ax, fig, *, title="", xlabel="", ylabel=""):
+    fig.patch.set_facecolor(BG)
+    ax.set_facecolor(PANEL)
+    ax.tick_params(colors=DIM, labelsize=7.5, length=0)
+    ax.xaxis.label.set_color(DIM)
+    ax.yaxis.label.set_color(DIM)
+    ax.title.set_color("#f5f5f5")
+    for sp in ax.spines.values():
+        sp.set_edgecolor(BORDER)
+        sp.set_linewidth(0.5)
+    ax.grid(color=GRID, linewidth=0.4, linestyle="-", alpha=1)
     ax.set_axisbelow(True)
+    if title:
+        ax.set_title(title, fontsize=9, fontweight="bold",
+                     fontfamily="monospace", color="#f5f5f5", pad=8)
+    if xlabel:
+        ax.set_xlabel(xlabel, fontsize=8, color=DIM)
+    if ylabel:
+        ax.set_ylabel(ylabel, fontsize=8, color=DIM)
 
+
+# ── Undercut EV timeline ──────────────────────────────────────────────────────
 
 def plot_undercut_ev_timeline(
     scan_df: pd.DataFrame,
@@ -51,26 +63,20 @@ def plot_undercut_ev_timeline(
     filename: str = "undercut_ev_timeline.png",
 ) -> plt.Figure:
     """
-    Plot undercut EV (seconds gained) per lap with P10–P90 confidence band.
+    Two-panel chart:
+      Top:    EV line + P10-P90 band + green/red per-lap shading
+      Bottom: Win rate bars + 50% threshold line
 
-    The key chart for strategy briefings:
-      - X axis: candidate pit lap
-      - Y axis: expected value in seconds (positive = we benefit from undercutting)
-      - Green shading: laps where undercut is recommended (win_rate >= 50%)
-      - Red shading: laps where undercut is -EV or too risky
-
-    Parameters
-    ----------
-    scan_df       : DataFrame from rival.scan_undercut_window()
-    rival_driver  : Rival driver code (for labelling)
-    our_driver    : Our driver code (for labelling)
+    Full grid, compound-aware colours, clean annotations.
     """
-    fig, (ax_ev, ax_wr) = plt.subplots(2, 1, figsize=(12, 7),
-                                        gridspec_kw={"height_ratios": [3, 1]},
-                                        sharex=True)
-
+    fig, (ax_ev, ax_wr) = plt.subplots(
+        2, 1, figsize=(13, 7.5),
+        gridspec_kw={"height_ratios": [2.8, 1], "hspace": 0.06},
+        sharex=True,
+    )
     for ax in (ax_ev, ax_wr):
-        _apply_f1_style(ax, fig)
+        _theme(ax, fig)
+    fig.patch.set_facecolor(BG)
 
     laps = scan_df["lap"].values
     ev   = scan_df["mean_ev"].values
@@ -79,148 +85,177 @@ def plot_undercut_ev_timeline(
     wr   = scan_df["win_rate"].values
     rec  = scan_df["recommend"].values
 
-    # ── EV line + confidence band ─────────────────────────────────────────────
-    ax_ev.fill_between(laps, p10, p90,
-                        color=BLUE, alpha=0.15, label="P10–P90 range")
-    ax_ev.plot(laps, ev, color=BLUE, linewidth=2, label="Mean EV")
-    ax_ev.axhline(0, color=TEXT_COL, linewidth=0.8, linestyle="--", alpha=0.5)
-
-    # Shade recommended laps green, non-recommended red
+    # ── Per-lap background shading ────────────────────────────────────────────
     for i, lap in enumerate(laps):
         colour = GREEN if rec[i] else RED
-        ax_ev.axvspan(lap - 0.5, lap + 0.5, alpha=0.08, color=colour)
+        for ax in (ax_ev, ax_wr):
+            ax.axvspan(lap - 0.5, lap + 0.5, alpha=0.055, color=colour, zorder=1)
 
-    # Annotate the best lap
-    if len(ev) > 0:
-        best_idx = np.argmax(ev)
+    # ── Confidence band ───────────────────────────────────────────────────────
+    ax_ev.fill_between(laps, p10, p90, color=BLUE, alpha=0.12,
+                        label="P10–P90 range", zorder=2)
+    ax_ev.fill_between(laps, 0, ev,
+                        where=(ev > 0), color=GREEN, alpha=0.08, zorder=2)
+    ax_ev.fill_between(laps, 0, ev,
+                        where=(ev <= 0), color=RED, alpha=0.08, zorder=2)
+
+    # ── EV line ───────────────────────────────────────────────────────────────
+    ax_ev.plot(laps, ev, color=BLUE, linewidth=2, label="Mean EV", zorder=4)
+    ax_ev.plot(laps, p10, color=BLUE, linewidth=0.5,
+               linestyle="--", alpha=0.35, zorder=3)
+    ax_ev.plot(laps, p90, color=BLUE, linewidth=0.5,
+               linestyle="--", alpha=0.35, zorder=3)
+    ax_ev.axhline(0, color=BORDER, linewidth=1, linestyle="-", zorder=2)
+
+    # ── Best lap annotation ───────────────────────────────────────────────────
+    if len(ev) > 0 and rec.any():
+        rec_mask  = rec & (ev > 0)
+        if rec_mask.any():
+            best_idx = np.argmax(np.where(rec_mask, ev, -np.inf))
+        else:
+            best_idx = np.argmax(ev)
         ax_ev.annotate(
-            f"Best: Lap {laps[best_idx]}\n+{ev[best_idx]:.1f}s EV",
+            f"  OPTIMAL\n  Lap {laps[best_idx]}\n  +{ev[best_idx]:.2f}s EV",
             xy=(laps[best_idx], ev[best_idx]),
-            xytext=(laps[best_idx] + 1, ev[best_idx] + 0.3),
-            fontsize=8, color=GREEN, fontfamily="monospace",
-            arrowprops=dict(arrowstyle="->", color=GREEN, lw=0.8),
+            xytext=(laps[best_idx] + 1.5, ev[best_idx] + abs(ev).max() * 0.25),
+            fontsize=7.5, color=GREEN, fontfamily="monospace",
+            arrowprops=dict(arrowstyle="->", color=GREEN, lw=1.0),
+            zorder=6,
         )
 
-    ax_ev.set_ylabel("EV vs Staying Out (s)", fontsize=9)
     ax_ev.set_title(
         f"UNDERCUT ANALYSIS — {our_driver} vs {rival_driver}",
-        fontsize=12, fontweight="bold", fontfamily="monospace",
+        fontsize=10, fontweight="bold", fontfamily="monospace",
+        color="#f5f5f5", pad=10,
     )
-    green_patch = mpatches.Patch(color=GREEN, alpha=0.5, label="Recommended window")
-    red_patch   = mpatches.Patch(color=RED,   alpha=0.3, label="Avoid")
-    ax_ev.legend(handles=[
-        plt.Line2D([0], [0], color=BLUE, linewidth=2, label="Mean EV"),
-        mpatches.Patch(color=BLUE, alpha=0.2, label="P10–P90"),
-        green_patch, red_patch,
-    ], facecolor=PANEL_BG, edgecolor=GRID_COL, labelcolor=TEXT_COL, fontsize=8)
+    ax_ev.set_ylabel("EV vs Staying Out (s)", fontsize=8, color=DIM)
 
-    # ── Win rate bar chart ────────────────────────────────────────────────────
+    handles = [
+        plt.Line2D([0], [0], color=BLUE,  linewidth=2, label="Mean EV"),
+        mpatches.Patch(color=BLUE,  alpha=0.2, label="P10–P90"),
+        mpatches.Patch(color=GREEN, alpha=0.3, label="Recommended"),
+        mpatches.Patch(color=RED,   alpha=0.2, label="Avoid"),
+    ]
+    ax_ev.legend(handles=handles, facecolor=PANEL2, edgecolor=BORDER,
+                  labelcolor=TEXT, fontsize=7.5, loc="upper left", framealpha=1)
+
+    # ── Win rate bars ─────────────────────────────────────────────────────────
     bar_colours = [GREEN if r else RED for r in rec]
-    ax_wr.bar(laps, wr * 100, color=bar_colours, alpha=0.85, width=0.7)
-    ax_wr.axhline(50, color=YELLOW, linewidth=1, linestyle="--", alpha=0.8,
-                  label="50% threshold")
-    ax_wr.set_ylim(0, 100)
-    ax_wr.set_ylabel("Win Rate (%)", fontsize=8)
-    ax_wr.set_xlabel("Candidate Pit Lap", fontsize=9)
-    ax_wr.legend(facecolor=PANEL_BG, edgecolor=GRID_COL, labelcolor=TEXT_COL, fontsize=7)
+    ax_wr.bar(laps, wr * 100, color=bar_colours, alpha=0.8, width=0.75, zorder=3)
+    ax_wr.axhline(50, color=YELLOW, linewidth=1.2, linestyle="--",
+                   alpha=0.85, zorder=4, label="50% threshold")
+    ax_wr.set_ylim(0, 105)
+    ax_wr.set_ylabel("Win %", fontsize=7.5, color=DIM)
+    ax_wr.set_xlabel("Candidate Pit Lap", fontsize=8, color=DIM)
+    ax_wr.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f%%"))
+    ax_wr.legend(facecolor=PANEL2, edgecolor=BORDER, labelcolor=TEXT,
+                  fontsize=7, framealpha=1)
 
-    fig.tight_layout(pad=1.5)
+    for sp in ax_ev.spines.values():
+        sp.set_linewidth(0.5)
+    for sp in ax_wr.spines.values():
+        sp.set_linewidth(0.5)
 
+    fig.tight_layout(pad=1.4)
     if save:
         out = OUTPUTS_DIR / filename
         fig.savefig(out, dpi=150, bbox_inches="tight")
         log.info(f"Saved: {out}")
-
     return fig
 
+
+# ── Gap trace ─────────────────────────────────────────────────────────────────
 
 def plot_gap_trace(
     gap_per_lap: list[float],
     our_pit_laps: list[int],
     rival_pit_laps: list[int],
-    our_driver: str = "Our car",
+    our_driver: str = "Us",
     rival_driver: str = "Rival",
     save: bool = True,
     filename: str = "gap_trace.png",
 ) -> plt.Figure:
     """
-    Plot the gap to rival on every lap.
-
-    Positive gap = rival is ahead of us.
-    Negative gap = we are ahead of the rival.
-    Zero crossing = position change.
-
-    Parameters
-    ----------
-    gap_per_lap     : List of gap values from simulate_race_with_rival()
-    our_pit_laps    : Lap numbers where we pit
-    rival_pit_laps  : Lap numbers where rival pits
+    Lap-by-lap gap trace.
+    Above zero = rival ahead. Below zero = we are ahead.
+    Our pit = yellow marker. Rival pit = red marker.
     """
-    fig, ax = plt.subplots(figsize=(12, 5))
-    _apply_f1_style(ax, fig)
+    fig, ax = plt.subplots(figsize=(13, 5))
+    _theme(ax, fig,
+           title=f"LAP-BY-LAP GAP — {our_driver} vs {rival_driver}",
+           xlabel="Lap Number",
+           ylabel=f"Gap: {rival_driver} − {our_driver} (s)")
 
-    laps = list(range(1, len(gap_per_lap) + 1))
+    laps = np.arange(1, len(gap_per_lap) + 1)
     gap  = np.array(gap_per_lap)
 
-    # Fill above/below zero differently
     ax.fill_between(laps, gap, 0,
-                    where=(gap > 0), color=RED,   alpha=0.15, label="Rival ahead")
+                    where=(gap > 0), color=RED,   alpha=0.12, label=f"{rival_driver} ahead")
     ax.fill_between(laps, gap, 0,
-                    where=(gap < 0), color=GREEN, alpha=0.15, label="We are ahead")
+                    where=(gap <= 0), color=GREEN, alpha=0.12, label=f"{our_driver} ahead")
+    ax.plot(laps, gap, color=BLUE, linewidth=1.8, zorder=4, label="Gap (s)")
+    ax.axhline(0, color=BORDER, linewidth=1, zorder=3)
 
-    ax.plot(laps, gap, color=BLUE, linewidth=2, label="Gap (s)")
-    ax.axhline(0, color=TEXT_COL, linewidth=1, linestyle="--", alpha=0.7)
+    # Smooth zero-crossing markers
+    for i in range(1, len(gap)):
+        if gap[i - 1] * gap[i] < 0:
+            cross = laps[i - 1] + gap[i - 1] / (gap[i - 1] - gap[i])
+            ax.axvline(cross, color=YELLOW, linewidth=1.2, linestyle=":",
+                       alpha=0.7, zorder=3)
+            label = f"{our_driver} overtakes" if gap[i] < 0 else f"{rival_driver} overtakes"
+            ax.text(cross, 0, f"  {label}", fontsize=6, color=YELLOW,
+                    fontfamily="monospace", va="bottom", alpha=0.8)
 
-    # Mark our pit stops
+    # Pit stop markers
+    y_range = gap.max() - gap.min() if gap.max() != gap.min() else 1
+    top     = gap.max() + y_range * 0.1
+    bot     = gap.min() - y_range * 0.1
+
     for pit_lap in our_pit_laps:
-        ax.axvline(pit_lap, color=YELLOW, linewidth=1.5, linestyle=":",
-                   alpha=0.9, label="Our pit" if pit_lap == our_pit_laps[0] else "")
-        ax.text(pit_lap, ax.get_ylim()[1] * 0.9, f"PIT\n{our_driver[:3]}",
-                fontsize=6, color=YELLOW, ha="center", fontfamily="monospace")
+        ax.axvline(pit_lap, color=YELLOW, linewidth=1.2, linestyle="--",
+                   alpha=0.6, zorder=2)
+        ax.text(pit_lap, top, f"PIT\n{our_driver[:3]}",
+                fontsize=6, color=YELLOW, ha="center", fontfamily="monospace",
+                va="top", alpha=0.85)
 
-    # Mark rival pit stops
     for pit_lap in rival_pit_laps:
-        ax.axvline(pit_lap, color=RED, linewidth=1.5, linestyle=":",
-                   alpha=0.9, label="Rival pit" if pit_lap == rival_pit_laps[0] else "")
-        ax.text(pit_lap, ax.get_ylim()[0] * 0.9, f"PIT\n{rival_driver[:3]}",
-                fontsize=6, color=RED, ha="center", fontfamily="monospace")
+        ax.axvline(pit_lap, color=RED, linewidth=1.2, linestyle="--",
+                   alpha=0.6, zorder=2)
+        ax.text(pit_lap, bot, f"PIT\n{rival_driver[:3]}",
+                fontsize=6, color=RED, ha="center", fontfamily="monospace",
+                va="bottom", alpha=0.85)
 
-    # Annotate final position
-    final_gap = gap[-1]
-    winner = rival_driver if final_gap > 0 else our_driver
+    # Final gap annotation
+    final  = gap[-1]
+    winner = rival_driver if final > 0 else our_driver
+    color  = RED if final > 0 else GREEN
     ax.annotate(
-        f"Finish: {winner} ahead by {abs(final_gap):.1f}s",
-        xy=(laps[-1], final_gap),
-        xytext=(laps[-1] - 10, final_gap + (2 if final_gap < 0 else -2)),
-        fontsize=8, color=TEXT_COL, fontfamily="monospace",
-        arrowprops=dict(arrowstyle="->", color=TEXT_COL, lw=0.7),
+        f"Finish: {winner}\nahead {abs(final):.1f}s",
+        xy=(laps[-1], final),
+        xytext=(laps[-1] - 8, final + (y_range * 0.25 if final < 0 else -y_range * 0.25)),
+        fontsize=7.5, color=color, fontfamily="monospace",
+        arrowprops=dict(arrowstyle="->", color=color, lw=0.8),
     )
 
-    ax.set_xlabel("Lap Number", fontsize=9)
-    ax.set_ylabel(f"Gap: {rival_driver} − {our_driver} (s)", fontsize=9)
-    ax.set_title(
-        f"LAP-BY-LAP GAP TRACE — {our_driver} vs {rival_driver}",
-        fontsize=12, fontweight="bold", fontfamily="monospace",
-    )
     handles = [
-        plt.Line2D([0], [0], color=BLUE,  linewidth=2, label="Gap"),
-        mpatches.Patch(color=RED,   alpha=0.3, label="Rival ahead"),
-        mpatches.Patch(color=GREEN, alpha=0.3, label="We are ahead"),
-        plt.Line2D([0], [0], color=YELLOW, linewidth=1.5, linestyle=":", label="Our pit"),
-        plt.Line2D([0], [0], color=RED,    linewidth=1.5, linestyle=":", label="Rival pit"),
+        plt.Line2D([0], [0], color=BLUE,   linewidth=1.8, label="Gap (s)"),
+        mpatches.Patch(color=RED,   alpha=0.3, label=f"{rival_driver} ahead"),
+        mpatches.Patch(color=GREEN, alpha=0.3, label=f"{our_driver} ahead"),
+        plt.Line2D([0], [0], color=YELLOW, linewidth=1.2, linestyle="--", label="Our pit"),
+        plt.Line2D([0], [0], color=RED,    linewidth=1.2, linestyle="--", label="Rival pit"),
     ]
-    ax.legend(handles=handles, facecolor=PANEL_BG, edgecolor=GRID_COL,
-              labelcolor=TEXT_COL, fontsize=8)
+    ax.legend(handles=handles, facecolor=PANEL2, edgecolor=BORDER,
+              labelcolor=TEXT, fontsize=7.5, framealpha=1)
 
-    fig.tight_layout(pad=1.5)
-
+    fig.tight_layout(pad=1.4)
     if save:
         out = OUTPUTS_DIR / filename
         fig.savefig(out, dpi=150, bbox_inches="tight")
         log.info(f"Saved: {out}")
-
     return fig
 
+
+# ── Head-to-head win rate ─────────────────────────────────────────────────────
 
 def plot_head_to_head_mc(
     our_win_rates: dict[str, float],
@@ -230,47 +265,52 @@ def plot_head_to_head_mc(
     filename: str = "h2h_win_rates.png",
 ) -> plt.Figure:
     """
-    Bar chart of win rate (probability of finishing ahead of rival)
-    for each candidate strategy we might run.
-
-    Parameters
-    ----------
-    our_win_rates : {strategy_repr: win_rate} — from run_rival_monte_carlo()
-    rival_driver  : Driver code of rival (for labelling)
+    Horizontal bar chart of head-to-head win rates.
+    Bars: green (≥50%) / red (<50%). 50% break-even dashed line.
+    Value labels at bar ends. Background gradient band.
     """
     strategies = list(our_win_rates.keys())
-    win_rates   = [our_win_rates[s] * 100 for s in strategies]
+    win_rates  = [our_win_rates[s] * 100 for s in strategies]
+    n          = len(strategies)
 
-    fig, ax = plt.subplots(figsize=(10, 0.5 * len(strategies) + 2))
-    _apply_f1_style(ax, fig)
+    fig, ax = plt.subplots(figsize=(11, max(4, 0.48 * n + 1.8)))
+    _theme(ax, fig,
+           title=f"HEAD-TO-HEAD WIN RATE vs {rival_driver}{title_suffix}",
+           xlabel=f"Win Rate vs {rival_driver} (%)")
 
-    y = np.arange(len(strategies))
-    colours = [GREEN if w >= 50 else RED for w in win_rates]
+    y = np.arange(n)
 
-    ax.barh(y, win_rates, color=colours, alpha=0.85, height=0.6)
-    ax.axvline(50, color=YELLOW, linewidth=1.5, linestyle="--", label="50% break-even")
+    # Background band
+    ax.axvspan(50, 100, color=GREEN, alpha=0.03, zorder=1)
+    ax.axvspan(0,  50,  color=RED,   alpha=0.03, zorder=1)
+
+    for i, (strat, wr) in enumerate(zip(strategies, win_rates)):
+        colour = GREEN if wr >= 50 else RED
+        ax.barh(i, wr, height=0.52, color=colour, alpha=0.8, zorder=3)
+        # Label
+        x_pos  = wr + 1
+        anchor = "left"
+        if wr > 90:
+            x_pos, anchor = wr - 1, "right"
+        ax.text(x_pos, i, f"{wr:.0f}%", va="center", ha=anchor,
+                fontsize=7.5, color=colour if wr >= 50 else TEXT,
+                fontfamily="monospace", zorder=5)
+
+    # Break-even line
+    ax.axvline(50, color=YELLOW, linewidth=1.4, linestyle="--",
+               alpha=0.9, zorder=4, label="50% break-even")
 
     ax.set_yticks(y)
-    ax.set_yticklabels(strategies, fontsize=8, fontfamily="monospace")
+    ax.set_yticklabels(strategies, fontsize=7.5, fontfamily="monospace")
     ax.invert_yaxis()
-    ax.set_xlim(0, 100)
-    ax.set_xlabel(f"Win Rate vs {rival_driver} (%)", fontsize=9)
-    ax.set_title(
-        f"HEAD-TO-HEAD WIN RATE vs {rival_driver}{title_suffix}",
-        fontsize=11, fontweight="bold", fontfamily="monospace",
-    )
-    ax.legend(facecolor=PANEL_BG, edgecolor=GRID_COL, labelcolor=TEXT_COL, fontsize=8)
+    ax.set_xlim(0, 108)
+    ax.xaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f%%"))
+    ax.legend(facecolor=PANEL2, edgecolor=BORDER, labelcolor=TEXT,
+              fontsize=7.5, framealpha=1)
 
-    # Annotate values
-    for i, (w, rec) in enumerate(zip(win_rates, win_rates)):
-        ax.text(w + 1, i, f"{w:.0f}%", va="center", fontsize=7,
-                color=TEXT_COL, fontfamily="monospace")
-
-    fig.tight_layout(pad=1.5)
-
+    fig.tight_layout(pad=1.4)
     if save:
         out = OUTPUTS_DIR / filename
         fig.savefig(out, dpi=150, bbox_inches="tight")
         log.info(f"Saved: {out}")
-
     return fig

@@ -43,9 +43,13 @@ PIT_LOSS = {
 }
 TARGET_TEAM = "DEFAULT"
 
-#  Tyre deg model parameters 
-# Polynomial degree for degradation curve fit
-DEG_POLY_DEGREE = 2
+#  Tyre deg model parameters
+# Minimum laps for a full 3-segment piecewise fit
+DEG_MIN_LAPS_FULL     = 12
+# Minimum laps for a 2-segment fallback fit
+DEG_MIN_LAPS_FALLBACK = 6
+# Cliff slope threshold (s/lap) — below this, the final segment is not a cliff
+DEG_CLIFF_THRESHOLD   = 0.12
 
 # Lap time noise (std dev in seconds) for Monte Carlo sampling
 LAP_TIME_NOISE_STD = 0.3

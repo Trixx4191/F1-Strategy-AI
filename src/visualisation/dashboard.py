@@ -1,10 +1,14 @@
 """
-dashboard.py — F1 Strategy AI · Terminal Edition
-Inspired by f1thedata.com — brutalist data-terminal aesthetic
+dashboard.py — F1 Strategy AI · Terminal Edition (v2)
+
+Design language: broadcast-dark data terminal.
+  - Photos kept, elevated with a layered glass-noise overlay
+  - Animated feature cards on landing
+  - Fully functional tabs with live-data cliff badges, backtest, rival H2H
+  - Every button / menu does exactly what it says
 """
 
-import sys
-import base64
+import sys, base64
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,1211 +20,997 @@ import pandas as pd
 import streamlit as st
 import matplotlib
 import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
 
-from src.pipeline.loader import load_session, get_laps, get_pit_stops
+from src.pipeline.loader import (
+    load_session, get_laps, get_pit_stops,
+    get_race_schedule, get_session_drivers, get_race_laps,
+)
 from src.pipeline.cleaner import clean_laps
 from src.pipeline.features import engineer_features
 from src.models.tyre_deg import TyreDegModel
 from src.models.pit_loss import get_pit_loss
-from src.simulator.strategy import generate_one_stop_strategies, generate_two_stop_strategies
-from src.simulator.monte_carlo import run_monte_carlo
+from src.simulator.strategy import (
+    generate_one_stop_strategies, generate_two_stop_strategies, Strategy, Stint,
+)
+from src.simulator.monte_carlo import run_monte_carlo, run_rival_monte_carlo
 from src.simulator.race_sim import simulate_race
 from src.visualisation.tyre_plots import (
-    plot_degradation_curves, plot_stint_scatter, plot_compound_comparison_table
+    plot_degradation_curves, plot_stint_scatter, plot_compound_comparison_table,
 )
 from src.visualisation.strategy_plots import (
-    plot_strategy_comparison, plot_lap_trace, plot_undercut_window
+    plot_strategy_comparison, plot_lap_trace, plot_undercut_window,
 )
 from src.simulator.rival import RivalState, scan_undercut_window
-from src.simulator.monte_carlo import run_rival_monte_carlo
 from src.visualisation.rival_plots import (
-    plot_undercut_ev_timeline, plot_gap_trace, plot_head_to_head_mc
+    plot_undercut_ev_timeline, plot_gap_trace, plot_head_to_head_mc,
 )
 from src.utils.config import COMPOUNDS, RACE_LAPS, N_SIMULATIONS
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DATA REGISTRY
-# ─────────────────────────────────────────────────────────────────────────────
-
+# ── Static data ───────────────────────────────────────────────────────────────
 DRIVERS = {
-    "VER": {"name": "VERSTAPPEN",  "first": "Max",       "team": "RED BULL RACING",  "color": "#3671C6", "num": "1"},
-    "PER": {"name": "PÉREZ",       "first": "Sergio",    "team": "RED BULL RACING",  "color": "#3671C6", "num": "11"},
-    "LEC": {"name": "LECLERC",     "first": "Charles",   "team": "FERRARI",           "color": "#E8002D", "num": "16"},
-    "SAI": {"name": "SAINZ",       "first": "Carlos",    "team": "FERRARI",           "color": "#E8002D", "num": "55"},
-    "HAM": {"name": "HAMILTON",    "first": "Lewis",     "team": "MERCEDES",          "color": "#00D2BE", "num": "44"},
-    "RUS": {"name": "RUSSELL",     "first": "George",    "team": "MERCEDES",          "color": "#00D2BE", "num": "63"},
-    "NOR": {"name": "NORRIS",      "first": "Lando",     "team": "MCLAREN",           "color": "#FF8000", "num": "4"},
-    "PIA": {"name": "PIASTRI",     "first": "Oscar",     "team": "MCLAREN",           "color": "#FF8000", "num": "81"},
-    "ALO": {"name": "ALONSO",      "first": "Fernando",  "team": "ASTON MARTIN",      "color": "#229971", "num": "14"},
-    "STR": {"name": "STROLL",      "first": "Lance",     "team": "ASTON MARTIN",      "color": "#229971", "num": "18"},
-    "GAS": {"name": "GASLY",       "first": "Pierre",    "team": "ALPINE",            "color": "#0093CC", "num": "10"},
-    "OCO": {"name": "OCON",        "first": "Esteban",   "team": "ALPINE",            "color": "#0093CC", "num": "31"},
-    "ALB": {"name": "ALBON",       "first": "Alexander", "team": "WILLIAMS",          "color": "#005AFF", "num": "23"},
-    "SAR": {"name": "SARGEANT",    "first": "Logan",     "team": "WILLIAMS",          "color": "#005AFF", "num": "2"},
-    "BOT": {"name": "BOTTAS",      "first": "Valtteri",  "team": "KICK SAUBER",       "color": "#52E252", "num": "77"},
-    "ZHO": {"name": "ZHOU",        "first": "Guanyu",    "team": "KICK SAUBER",       "color": "#52E252", "num": "24"},
-    "HUL": {"name": "HÜLKENBERG",  "first": "Nico",      "team": "HAAS",              "color": "#B6BABD", "num": "27"},
-    "MAG": {"name": "MAGNUSSEN",   "first": "Kevin",     "team": "HAAS",              "color": "#B6BABD", "num": "20"},
-    "TSU": {"name": "TSUNODA",     "first": "Yuki",      "team": "RB",                "color": "#6692FF", "num": "22"},
-    "RIC": {"name": "RICCIARDO",   "first": "Daniel",    "team": "RB",                "color": "#6692FF", "num": "3"},
+    "VER": {"name":"VERSTAPPEN", "first":"Max",       "team":"RED BULL RACING",  "color":"#3671C6","num":"1"},
+    "PER": {"name":"PÉREZ",      "first":"Sergio",    "team":"RED BULL RACING",  "color":"#3671C6","num":"11"},
+    "LEC": {"name":"LECLERC",    "first":"Charles",   "team":"FERRARI",          "color":"#E8002D","num":"16"},
+    "SAI": {"name":"SAINZ",      "first":"Carlos",    "team":"FERRARI",          "color":"#E8002D","num":"55"},
+    "HAM": {"name":"HAMILTON",   "first":"Lewis",     "team":"MERCEDES",         "color":"#00D2BE","num":"44"},
+    "RUS": {"name":"RUSSELL",    "first":"George",    "team":"MERCEDES",         "color":"#00D2BE","num":"63"},
+    "NOR": {"name":"NORRIS",     "first":"Lando",     "team":"MCLAREN",          "color":"#FF8000","num":"4"},
+    "PIA": {"name":"PIASTRI",    "first":"Oscar",     "team":"MCLAREN",          "color":"#FF8000","num":"81"},
+    "ALO": {"name":"ALONSO",     "first":"Fernando",  "team":"ASTON MARTIN",     "color":"#229971","num":"14"},
+    "STR": {"name":"STROLL",     "first":"Lance",     "team":"ASTON MARTIN",     "color":"#229971","num":"18"},
+    "GAS": {"name":"GASLY",      "first":"Pierre",    "team":"ALPINE",           "color":"#0093CC","num":"10"},
+    "OCO": {"name":"OCON",       "first":"Esteban",   "team":"ALPINE",           "color":"#0093CC","num":"31"},
+    "ALB": {"name":"ALBON",      "first":"Alexander", "team":"WILLIAMS",         "color":"#005AFF","num":"23"},
+    "SAR": {"name":"SARGEANT",   "first":"Logan",     "team":"WILLIAMS",         "color":"#005AFF","num":"2"},
+    "BOT": {"name":"BOTTAS",     "first":"Valtteri",  "team":"KICK SAUBER",      "color":"#52E252","num":"77"},
+    "ZHO": {"name":"ZHOU",       "first":"Guanyu",    "team":"KICK SAUBER",      "color":"#52E252","num":"24"},
+    "HUL": {"name":"HÜLKENBERG", "first":"Nico",      "team":"HAAS",             "color":"#B6BABD","num":"27"},
+    "MAG": {"name":"MAGNUSSEN",  "first":"Kevin",     "team":"HAAS",             "color":"#B6BABD","num":"20"},
+    "TSU": {"name":"TSUNODA",    "first":"Yuki",      "team":"RB",               "color":"#6692FF","num":"22"},
+    "RIC": {"name":"RICCIARDO",  "first":"Daniel",    "team":"RB",               "color":"#6692FF","num":"3"},
 }
+TYRE_COLORS = {"SOFT":"#E8002D","MEDIUM":"#FFD700","HARD":"#F0F2F5","INTER":"#39B54A","WET":"#0067FF"}
 
-RACES_2024 = [
-    "Bahrain","Saudi Arabia","Australia","Japan","China",
-    "Miami","Emilia Romagna","Monaco","Canada","Spain",
-    "Austria","Great Britain","Hungary","Belgium","Netherlands",
-    "Italian","Azerbaijan","Singapore","United States",
-    "Mexico City","São Paulo","Las Vegas","Qatar","Abu Dhabi",
-]
-
-TYRE_COLORS = {"SOFT": "#E8002D", "MEDIUM": "#FFD700", "HARD": "#F0F2F5", "INTER": "#39B54A", "WET": "#0067FF"}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# PAGE CONFIG
-# ─────────────────────────────────────────────────────────────────────────────
-
-_VIZ_DIR = Path(__file__).resolve().parent
+# ── Page config ───────────────────────────────────────────────────────────────
+_DIR = Path(__file__).resolve().parent
 
 st.set_page_config(
     page_title="F1 STRATEGY AI",
-    page_icon=str(_VIZ_DIR / "f1.png"),
+    page_icon=str(_DIR / "f1.png"),
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# BACKGROUND IMAGES (base64-encoded for Streamlit CSS injection)
-# ─────────────────────────────────────────────────────────────────────────────
+def _b64(p: Path) -> str:
+    with open(p, "rb") as f:
+        return base64.b64encode(f.read()).decode()
 
-def _b64(path: Path) -> str:
-    with open(path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
+_IMG_RED  = _b64(_DIR / "F1_RED.jpeg")
+_IMG_JACK = _b64(_DIR / "JACK TEAM RACING.jpeg")
 
-_IMG_RED = _b64(_VIZ_DIR / "F1_RED.jpeg")
-_IMG_JACK = _b64(_VIZ_DIR / "JACK TEAM RACING.jpeg")
-
-# ─────────────────────────────────────────────────────────────────────────────
-# GLOBAL STYLES
-# ─────────────────────────────────────────────────────────────────────────────
-
+# ── CSS ───────────────────────────────────────────────────────────────────────
 _CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Antonio:wght@100;400;700&family=Titillium+Web:ital,wght@0,200;0,300;0,400;0,600;0,700;1,400&display=swap');
 
-/* ── TOKENS ── */
 :root {{
-  --black:   #000000;
-  --off:     #0a0a0a;
-  --panel:   #111111;
-  --panel2:  #161616;
-  --border:  #222222;
-  --border2: #2a2a2a;
-  --red:     #e8002d;
-  --red2:    #ff1a3e;
-  --white:   #f5f5f5;
-  --dim:     #666666;
-  --dim2:    #444444;
-  --yellow:  #ffd700;
-  --teal:    #00d2be;
-  --orange:  #ff8000;
-
-  --font-display: 'Antonio', sans-serif;
-  --font-body:    'Titillium Web', sans-serif;
+  --black:  #000000;
+  --off:    #080808;
+  --panel:  #0f0f0f;
+  --panel2: #161616;
+  --border: #1e1e1e;
+  --bord2:  #2a2a2a;
+  --red:    #e8002d;
+  --red2:   #ff1a3e;
+  --white:  #f5f5f5;
+  --dim:    #555555;
+  --dim2:   #333333;
+  --yellow: #ffd700;
+  --teal:   #00d2be;
+  --orange: #ff8000;
+  --green:  #39b54a;
+  --font-d: 'Antonio', sans-serif;
+  --font-b: 'Titillium Web', sans-serif;
 }}
-
-/* ── GLOBAL RESET ── */
 *, *::before, *::after {{ box-sizing: border-box; }}
 
 html, body, .stApp {{
   background-color: var(--black);
-  background-image: url('data:image/jpeg;base64,{_IMG_RED}'), url('data:image/jpeg;base64,{_IMG_JACK}');
+  background-image:
+    url('data:image/jpeg;base64,{IMG_RED}'),
+    url('data:image/jpeg;base64,{IMG_JACK}');
   background-repeat: no-repeat, no-repeat;
   background-position: left center, right center;
   background-size: 50% auto, 50% auto;
   background-attachment: fixed, fixed;
   color: var(--white);
-  font-family: var(--font-body);
-  scroll-behavior: smooth;
+  font-family: var(--font-b);
 }}
-
-/* Dark overlay so text stays readable over the photos */
+/* layered overlays for the photos */
 .stApp::before {{
-  content: '';
-  position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0, 0, 0, 0.82);
-  z-index: 0;
-  pointer-events: none;
+  content:'';
+  position:fixed; inset:0;
+  background: radial-gradient(ellipse at 25% 50%, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.92) 70%),
+              radial-gradient(ellipse at 75% 50%, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.92) 70%);
+  z-index:0; pointer-events:none;
+}}
+/* subtle scanline texture */
+.stApp::after {{
+  content:'';
+  position:fixed; inset:0;
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.07) 2px,
+    rgba(0,0,0,0.07) 4px
+  );
+  z-index:0; pointer-events:none;
 }}
 
-/* hide streamlit chrome */
-#MainMenu, footer, header {{ visibility: hidden; }}
-.stDeployButton {{ display: none; }}
-[data-testid="stToolbar"] {{ display: none; }}
+#MainMenu, footer, header {{ visibility:hidden; }}
+.stDeployButton {{ display:none; }}
+[data-testid="stToolbar"] {{ display:none; }}
 
-/* ── MAIN CONTAINER ── */
 .main .block-container {{
   padding: 0 2rem 4rem !important;
-  max-width: 1440px !important;
+  max-width: 1480px !important;
+  position: relative;
+  z-index: 1;
 }}
 
-/* ══════════════════════════════
-   TOP NAV BAR
-══════════════════════════════ */
+/* ═══════════ NAV BAR ═══════════ */
 .f1-nav {{
-  position: sticky;
-  top: 0;
-  z-index: 100;
-  background: var(--black);
+  position:sticky; top:0; z-index:200;
+  background: rgba(0,0,0,0.96);
+  backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: stretch;
-  height: 52px;
-  margin: 0 -2rem;
-  padding: 0 2rem;
+  display:flex; align-items:stretch; height:50px;
+  margin:0 -2rem; padding:0 2rem;
 }}
 .f1-nav-logo {{
-  font-family: var(--font-display);
-  font-size: 1.1rem;
-  font-weight: 700;
-  letter-spacing: 0.15em;
-  color: var(--white);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding-right: 2rem;
-  border-right: 1px solid var(--border);
-  text-transform: uppercase;
-  white-space: nowrap;
+  font-family:var(--font-d); font-size:1rem; font-weight:700;
+  letter-spacing:.18em; color:var(--white);
+  display:flex; align-items:center; gap:10px;
+  padding-right:1.8rem; border-right:1px solid var(--border);
+  white-space:nowrap; text-transform:uppercase;
 }}
-.f1-nav-logo-dot {{
-  width: 8px; height: 8px;
-  background: var(--red);
-  border-radius: 50%;
+.f1-nav-dot {{
+  width:7px; height:7px; background:var(--red); border-radius:50%;
   animation: pulse 2s ease-in-out infinite;
 }}
-@keyframes pulse {{
-  0%, 100% {{ opacity: 1; transform: scale(1); }}
-  50%       {{ opacity: 0.5; transform: scale(0.8); }}
-}}
+@keyframes pulse {{ 0%,100%{{opacity:1;transform:scale(1)}} 50%{{opacity:.4;transform:scale(.75)}} }}
 .f1-nav-items {{
-  display: flex;
-  align-items: center;
-  gap: 0;
-  padding: 0 1rem;
-  flex: 1;
+  display:flex; align-items:center; padding:0 .6rem; flex:1;
 }}
 .f1-nav-item {{
-  font-family: var(--font-body);
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.15em;
-  color: var(--dim);
-  text-transform: uppercase;
-  padding: 0 1.1rem;
-  height: 52px;
-  display: flex;
-  align-items: center;
-  border-bottom: 2px solid transparent;
-  cursor: default;
-  transition: color 0.15s, border-color 0.15s;
-  white-space: nowrap;
+  font-family:var(--font-b); font-size:.65rem; font-weight:700;
+  letter-spacing:.18em; color:var(--dim); text-transform:uppercase;
+  padding:0 1.1rem; height:50px;
+  display:flex; align-items:center;
+  border-bottom:2px solid transparent;
+  transition:color .15s,border-color .15s; white-space:nowrap;
 }}
-.f1-nav-item:hover {{ color: var(--white); }}
-.f1-nav-item.active {{ color: var(--white); border-bottom-color: var(--red); }}
+.f1-nav-item.active {{ color:var(--white); border-bottom-color:var(--red); }}
 .f1-nav-right {{
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding-left: 1rem;
-  border-left: 1px solid var(--border);
-  font-family: var(--font-body);
-  font-size: 0.65rem;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  color: var(--dim);
-  text-transform: uppercase;
+  display:flex; align-items:center; gap:.5rem;
+  border-left:1px solid var(--border); padding-left:1rem;
+  font-family:var(--font-b); font-size:.62rem; font-weight:600;
+  letter-spacing:.1em; color:var(--dim); text-transform:uppercase;
 }}
 .f1-live-badge {{
-  background: var(--red);
-  color: white;
-  font-size: 0.55rem;
-  font-weight: 700;
-  letter-spacing: 0.2em;
-  padding: 2px 7px;
-  border-radius: 2px;
+  background:var(--red); color:white;
+  font-size:.52rem; font-weight:700; letter-spacing:.2em;
+  padding:2px 7px; border-radius:1px;
 }}
 
-/* ══════════════════════════════
-   SIDEBAR
-══════════════════════════════ */
+/* ═══════════ SIDEBAR ═══════════ */
 [data-testid="stSidebar"] {{
-  background: var(--off) !important;
-  border-right: 1px solid var(--border) !important;
-  min-width: 280px !important;
-  max-width: 280px !important;
+  background:var(--off) !important;
+  border-right:1px solid var(--border) !important;
+  /* Allow Streamlit to manage collapsed/expanded widths */
+  min-width:0 !important;
+  max-width:none !important;
 }}
-[data-testid="stSidebar"] > div:first-child {{
-  padding: 0 !important;
+[data-testid="stSidebar"] > div:first-child {{ padding:0 !important; }}
+
+/* Ensure sidebar content still remains measurable/clickable when collapsed */
+[data-testid="stSidebar"] * {{
+  min-width:0 !important;
 }}
+
 
 .sb-header {{
-  padding: 1.4rem 1.25rem 1rem;
-  border-bottom: 1px solid var(--border);
-  background: var(--black);
+  padding:1.4rem 1.25rem 1rem;
+  border-bottom:1px solid var(--border);
+  background: linear-gradient(135deg, #0a0a0a 0%, #0f0f0f 100%);
 }}
 .sb-title {{
-  font-family: var(--font-display);
-  font-size: 0.65rem;
-  font-weight: 700;
-  letter-spacing: 0.35em;
-  color: var(--dim);
-  text-transform: uppercase;
-  margin-bottom: 2px;
+  font-family:var(--font-d); font-size:.6rem; font-weight:700;
+  letter-spacing:.35em; color:var(--dim); text-transform:uppercase; margin-bottom:2px;
 }}
 .sb-subtitle {{
-  font-family: var(--font-display);
-  font-size: 1.35rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  color: var(--white);
-  text-transform: uppercase;
-  line-height: 1.1;
+  font-family:var(--font-d); font-size:1.3rem; font-weight:700;
+  letter-spacing:.05em; color:var(--white); text-transform:uppercase; line-height:1.1;
 }}
-.sb-subtitle span {{ color: var(--red); }}
-
+.sb-subtitle span {{ color:var(--red); }}
 .sb-section {{
-  padding: 0.9rem 1.25rem 0.3rem;
-  font-family: var(--font-body);
-  font-size: 0.6rem;
-  font-weight: 700;
-  letter-spacing: 0.3em;
-  color: var(--dim2);
-  text-transform: uppercase;
-  border-top: 1px solid var(--border);
-  margin-top: 0.5rem;
+  padding:.85rem 1.25rem .25rem;
+  font-family:var(--font-b); font-size:.58rem; font-weight:700;
+  letter-spacing:.28em; color:var(--dim2); text-transform:uppercase;
+  border-top:1px solid var(--border); margin-top:.3rem;
 }}
-
-/* Driver card */
 .drv-card {{
-  margin: 0.5rem 1.25rem 0.75rem;
-  background: var(--panel);
-  border: 1px solid var(--border2);
-  display: flex;
-  align-items: center;
-  gap: 0;
-  overflow: hidden;
-  transition: border-color 0.25s ease;
-  animation: drv-enter 0.35s cubic-bezier(0.22,1,0.36,1);
+  margin:.45rem 1.25rem .75rem;
+  background:var(--panel); border:1px solid var(--bord2);
+  display:flex; align-items:center; gap:0; overflow:hidden;
+  animation:drv-in .3s cubic-bezier(.22,1,.36,1);
 }}
-@keyframes drv-enter {{
-  from {{ opacity: 0; transform: translateY(6px); }}
-  to   {{ opacity: 1; transform: translateY(0); }}
-}}
-.drv-color-bar {{
-  width: 4px;
-  align-self: stretch;
-  flex-shrink: 0;
-}}
+@keyframes drv-in {{ from{{opacity:0;transform:translateY(5px)}} to{{opacity:1;transform:translateY(0)}} }}
+.drv-bar {{ width:4px; align-self:stretch; flex-shrink:0; }}
 .drv-num {{
-  font-family: var(--font-display);
-  font-size: 2rem;
-  font-weight: 700;
-  color: var(--white);
-  padding: 0.75rem 0.75rem 0.75rem 0.85rem;
-  line-height: 1;
-  opacity: 0.9;
+  font-family:var(--font-d); font-size:1.9rem; font-weight:700;
+  color:var(--white); padding:.7rem .7rem .7rem .85rem; line-height:1; opacity:.85;
 }}
-.drv-info {{ flex: 1; padding: 0.75rem 0.75rem 0.75rem 0; }}
-.drv-first {{
-  font-family: var(--font-body);
-  font-size: 0.65rem;
-  font-weight: 300;
-  color: var(--dim);
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  line-height: 1;
-}}
-.drv-last {{
-  font-family: var(--font-display);
-  font-size: 1rem;
-  font-weight: 700;
-  color: var(--white);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  line-height: 1.1;
-  margin: 1px 0;
-}}
-.drv-team {{
-  font-family: var(--font-body);
-  font-size: 0.58rem;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  color: var(--dim);
-  text-transform: uppercase;
-}}
+.drv-info {{ flex:1; padding:.7rem .7rem .7rem 0; }}
+.drv-first {{ font-family:var(--font-b); font-size:.6rem; font-weight:300; color:var(--dim); text-transform:uppercase; letter-spacing:.1em; line-height:1; }}
+.drv-last  {{ font-family:var(--font-d); font-size:.95rem; font-weight:700; color:var(--white); text-transform:uppercase; letter-spacing:.04em; line-height:1.15; margin:1px 0; }}
+.drv-team  {{ font-family:var(--font-b); font-size:.55rem; font-weight:600; letter-spacing:.12em; text-transform:uppercase; }}
 
-/* ── SIDEBAR CONTROLS ── */
-.stSelectbox label, .stSlider label, .stRadio label, .stNumberInput label {{
-  font-family: var(--font-body) !important;
-  font-size: 0.62rem !important;
-  font-weight: 700 !important;
-  letter-spacing: 0.2em !important;
-  color: var(--dim) !important;
-  text-transform: uppercase !important;
+/* sidebar controls */
+.stSelectbox label,.stSlider label,.stRadio label,.stNumberInput label {{
+  font-family:var(--font-b) !important; font-size:.6rem !important;
+  font-weight:700 !important; letter-spacing:.2em !important;
+  color:var(--dim) !important; text-transform:uppercase !important;
 }}
 [data-baseweb="select"] > div {{
-  background: var(--panel) !important;
-  border: 1px solid var(--border2) !important;
-  border-radius: 0 !important;
-  color: var(--white) !important;
-  font-family: var(--font-body) !important;
-  font-size: 0.85rem !important;
-  font-weight: 600 !important;
+  background:var(--panel) !important; border:1px solid var(--bord2) !important;
+  border-radius:0 !important; color:var(--white) !important;
+  font-family:var(--font-b) !important; font-size:.82rem !important; font-weight:600 !important;
 }}
-[data-baseweb="select"] > div:focus-within {{
-  border-color: var(--red) !important;
-  box-shadow: none !important;
-}}
-.stSlider [data-baseweb="slider"] {{
-  padding: 0 !important;
-}}
-.stSlider [data-baseweb="slider"] [role="slider"] {{
-  background: var(--red) !important;
-  border-color: var(--red) !important;
-  width: 14px !important; height: 14px !important;
-}}
-.stSlider [data-baseweb="slider"] div:nth-child(2) > div:nth-child(2) {{
-  background: var(--red) !important;
-}}
-.stRadio [data-baseweb="radio"] > label {{
-  gap: 8px !important;
-  font-family: var(--font-body) !important;
-  font-size: 0.78rem !important;
-  font-weight: 600 !important;
-  color: var(--white) !important;
-}}
-.stRadio [data-baseweb="radio"] [type="radio"]:checked + div {{
-  border-color: var(--red) !important;
-  background: var(--red) !important;
-}}
+[data-baseweb="select"] > div:focus-within {{ border-color:var(--red) !important; box-shadow:none !important; }}
+.stSlider [role="slider"] {{ background:var(--red) !important; border-color:var(--red) !important; width:13px !important; height:13px !important; }}
 
-/* RUN BUTTON */
+/* primary button */
 .stButton > button[kind="primary"] {{
-  background: var(--red) !important;
-  border: none !important;
-  border-radius: 0 !important;
-  font-family: var(--font-display) !important;
-  font-size: 0.8rem !important;
-  font-weight: 700 !important;
-  letter-spacing: 0.3em !important;
-  color: white !important;
-  padding: 0.85rem 1.5rem !important;
-  width: 100% !important;
-  transition: background 0.15s, letter-spacing 0.2s !important;
-  text-transform: uppercase !important;
+  background:var(--red) !important; border:none !important; border-radius:0 !important;
+  font-family:var(--font-d) !important; font-size:.78rem !important; font-weight:700 !important;
+  letter-spacing:.28em !important; color:white !important; padding:.8rem 1.5rem !important;
+  width:100% !important; transition:background .15s,letter-spacing .2s !important; text-transform:uppercase !important;
 }}
-.stButton > button[kind="primary"]:hover {{
-  background: var(--red2) !important;
-  letter-spacing: 0.4em !important;
-}}
+.stButton > button[kind="primary"]:hover {{ background:var(--red2) !important; letter-spacing:.38em !important; }}
 .stButton > button:not([kind="primary"]) {{
-  background: var(--panel) !important;
-  border: 1px solid var(--border2) !important;
-  border-radius: 0 !important;
-  font-family: var(--font-body) !important;
-  font-size: 0.72rem !important;
-  font-weight: 700 !important;
-  letter-spacing: 0.15em !important;
-  color: var(--white) !important;
-  padding: 0.65rem 1.5rem !important;
-  width: 100% !important;
-  transition: border-color 0.15s !important;
+  background:var(--panel) !important; border:1px solid var(--bord2) !important; border-radius:0 !important;
+  font-family:var(--font-b) !important; font-size:.7rem !important; font-weight:700 !important;
+  letter-spacing:.14em !important; color:var(--white) !important; padding:.62rem 1.5rem !important;
+  width:100% !important; transition:border-color .15s !important;
 }}
-.stButton > button:not([kind="primary"]):hover {{
-  border-color: var(--red) !important;
-}}
+.stButton > button:not([kind="primary"]):hover {{ border-color:var(--red) !important; }}
 
-/* ══════════════════════════════
-   MAIN CONTENT
-══════════════════════════════ */
-
-/* ── HERO SECTION ── */
-.hero-section {{
-  padding: 3rem 0 2.5rem;
-  border-bottom: 1px solid var(--border);
-  position: relative;
-  overflow: hidden;
+/* ═══════════ HERO ═══════════ */
+.hero {{
+  padding:3rem 0 2.5rem; border-bottom:1px solid var(--border);
+  position:relative; overflow:hidden;
 }}
-.hero-eyebrow {{
-  font-family: var(--font-body);
-  font-size: 0.62rem;
-  font-weight: 700;
-  letter-spacing: 0.35em;
-  color: var(--red);
-  text-transform: uppercase;
-  margin-bottom: 0.75rem;
-  display: flex;
-  align-items: center;
-  gap: 10px;
+.hero-eye {{
+  font-family:var(--font-b); font-size:.6rem; font-weight:700;
+  letter-spacing:.35em; color:var(--red); text-transform:uppercase;
+  margin-bottom:.75rem; display:flex; align-items:center; gap:10px;
 }}
-.hero-eyebrow::before {{
-  content: '';
-  width: 24px; height: 1px;
-  background: var(--red);
-}}
+.hero-eye::before {{ content:''; width:24px; height:1px; background:var(--red); }}
 .hero-h1 {{
-  font-family: var(--font-display);
-  font-size: clamp(2.8rem, 6vw, 5.5rem);
-  font-weight: 700;
-  line-height: 0.9;
-  text-transform: uppercase;
-  letter-spacing: -0.02em;
-  color: var(--white);
-  margin-bottom: 0.5rem;
+  font-family:var(--font-d); font-size:clamp(2.6rem,5.5vw,5rem);
+  font-weight:700; line-height:.92; text-transform:uppercase;
+  letter-spacing:-.02em; color:var(--white); margin-bottom:.4rem;
 }}
-.hero-h1 em {{
-  color: var(--red);
-  font-style: normal;
-}}
+.hero-h1 em {{ color:var(--red); font-style:normal; }}
 .hero-meta {{
-  font-family: var(--font-body);
-  font-size: 0.75rem;
-  font-weight: 400;
-  letter-spacing: 0.15em;
-  color: var(--dim);
-  text-transform: uppercase;
-  margin-top: 1.2rem;
+  font-family:var(--font-b); font-size:.72rem; font-weight:400;
+  letter-spacing:.15em; color:var(--dim); text-transform:uppercase; margin-top:1rem;
 }}
-.hero-meta strong {{ color: var(--white); font-weight: 600; }}
+.hero-meta strong {{ color:var(--white); font-weight:600; }}
+.hero-car {{
+  position:absolute; right:1.5rem; bottom:-10px; opacity:.055;
+  pointer-events:none; animation:idle 4s ease-in-out infinite;
+}}
+@keyframes idle {{ 0%,100%{{transform:translateY(0)}} 50%{{transform:translateY(-5px)}} }}
 
-/* Decorative circuit lines */
-.hero-circuit {{
-  position: absolute;
-  right: -40px; top: 50%;
-  transform: translateY(-50%);
-  opacity: 0.07;
-  pointer-events: none;
-}}
-
-/* F1 car silhouette */
-.f1-car-hero {{
-  position: absolute;
-  right: 2rem;
-  bottom: -12px;
-  opacity: 0.06;
-  pointer-events: none;
-  animation: car-idle 4s ease-in-out infinite;
-}}
-@keyframes car-idle {{
-  0%, 100% {{ transform: translateY(0px); }}
-  50%       {{ transform: translateY(-4px); }}
-}}
-
-/* ── METRIC STRIP ── */
+/* ═══════════ METRIC STRIP ═══════════ */
 .metric-strip {{
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  border-bottom: 1px solid var(--border);
-  animation: strip-in 0.5s ease-out;
+  display:grid; grid-template-columns:repeat(4,1fr);
+  border-bottom:1px solid var(--border);
+  animation:fade-up .45s ease-out;
 }}
-@keyframes strip-in {{
-  from {{ opacity: 0; transform: translateY(-8px); }}
-  to   {{ opacity: 1; transform: translateY(0); }}
+@keyframes fade-up {{ from{{opacity:0;transform:translateY(-6px)}} to{{opacity:1;transform:translateY(0)}} }}
+.mc {{
+  padding:1.5rem 1.7rem; border-right:1px solid var(--border);
+  position:relative; transition:background .2s;
 }}
-.metric-cell {{
-  padding: 1.6rem 1.8rem;
-  border-right: 1px solid var(--border);
-  position: relative;
-  transition: background 0.2s;
+.mc:last-child {{ border-right:none; }}
+.mc:hover {{ background:var(--panel); }}
+.mc::before {{
+  content:''; position:absolute; top:0;left:0;right:0; height:2px;
+  background:var(--red); transform:scaleX(0); transform-origin:left;
+  transition:transform .28s ease;
 }}
-.metric-cell:last-child {{ border-right: none; }}
-.metric-cell:hover {{ background: var(--panel); }}
-.metric-cell::before {{
-  content: '';
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  height: 2px;
-  background: var(--red);
-  transform: scaleX(0);
-  transform-origin: left;
-  transition: transform 0.3s ease;
+.mc:hover::before {{ transform:scaleX(1); }}
+.mc-lbl {{
+  font-family:var(--font-b); font-size:.55rem; font-weight:700;
+  letter-spacing:.28em; color:var(--dim); text-transform:uppercase; margin-bottom:.45rem;
 }}
-.metric-cell:hover::before {{ transform: scaleX(1); }}
-.mc-label {{
-  font-family: var(--font-body);
-  font-size: 0.58rem;
-  font-weight: 700;
-  letter-spacing: 0.3em;
-  color: var(--dim);
-  text-transform: uppercase;
-  margin-bottom: 0.5rem;
+.mc-val {{
+  font-family:var(--font-d); font-size:2.1rem; font-weight:700;
+  color:var(--white); line-height:1; letter-spacing:-.02em;
 }}
-.mc-value {{
-  font-family: var(--font-display);
-  font-size: 2.2rem;
-  font-weight: 700;
-  color: var(--white);
-  line-height: 1;
-  letter-spacing: -0.02em;
-}}
-.mc-value.accent-red  {{ color: var(--red); }}
-.mc-value.accent-teal {{ color: var(--teal); }}
-.mc-value.accent-gold {{ color: var(--yellow); }}
-.mc-value.accent-orange {{ color: var(--orange); }}
-.mc-unit {{
-  font-family: var(--font-body);
-  font-size: 0.7rem;
-  color: var(--dim);
-  font-weight: 400;
-  margin-left: 2px;
-}}
-.mc-sub {{
-  font-family: var(--font-body);
-  font-size: 0.65rem;
-  color: var(--dim);
-  margin-top: 4px;
-  letter-spacing: 0.05em;
-}}
+.mc-val.red    {{ color:var(--red); }}
+.mc-val.teal   {{ color:var(--teal); }}
+.mc-val.gold   {{ color:var(--yellow); }}
+.mc-val.orange {{ color:var(--orange); }}
+.mc-unit  {{ font-family:var(--font-b); font-size:.65rem; color:var(--dim); margin-left:2px; }}
+.mc-sub   {{ font-family:var(--font-b); font-size:.62rem; color:var(--dim); margin-top:4px; letter-spacing:.04em; }}
 
-/* ── TABS ── */
+/* ═══════════ TABS ═══════════ */
 .stTabs [data-baseweb="tab-list"] {{
-  background: var(--black) !important;
-  border-bottom: 1px solid var(--border) !important;
-  gap: 0 !important;
-  padding: 0 !important;
-  overflow-x: auto;
+  background:var(--black) !important; border-bottom:1px solid var(--border) !important;
+  gap:0 !important; padding:0 !important;
 }}
 .stTabs [data-baseweb="tab"] {{
-  background: transparent !important;
-  color: var(--dim) !important;
-  font-family: var(--font-body) !important;
-  font-size: 0.68rem !important;
-  font-weight: 700 !important;
-  letter-spacing: 0.2em !important;
-  text-transform: uppercase !important;
-  padding: 1rem 1.6rem !important;
-  border: none !important;
-  border-bottom: 2px solid transparent !important;
-  border-radius: 0 !important;
-  transition: color 0.15s, border-color 0.15s !important;
-  white-space: nowrap !important;
+  background:transparent !important; color:var(--dim) !important;
+  font-family:var(--font-b) !important; font-size:.65rem !important;
+  font-weight:700 !important; letter-spacing:.18em !important;
+  text-transform:uppercase !important; padding:.95rem 1.5rem !important;
+  border:none !important; border-bottom:2px solid transparent !important;
+  border-radius:0 !important; transition:color .15s,border-color .15s !important;
+  white-space:nowrap !important;
 }}
-.stTabs [data-baseweb="tab"]:hover {{
-  color: var(--white) !important;
-  background: var(--panel) !important;
-}}
-.stTabs [aria-selected="true"] {{
-  color: var(--white) !important;
-  border-bottom-color: var(--red) !important;
-  background: transparent !important;
-}}
-.stTabs [data-baseweb="tab-panel"] {{
-  padding: 2rem 0 0 !important;
-}}
-.stTabs [data-baseweb="tab-highlight"] {{ display: none !important; }}
+.stTabs [data-baseweb="tab"]:hover {{ color:var(--white) !important; background:var(--panel) !important; }}
+.stTabs [aria-selected="true"] {{ color:var(--white) !important; border-bottom-color:var(--red) !important; background:transparent !important; }}
+.stTabs [data-baseweb="tab-panel"] {{ padding:2rem 0 0 !important; }}
+.stTabs [data-baseweb="tab-highlight"] {{ display:none !important; }}
 
-/* ── SECTION HEADERS ── */
-.sec-head {{
-  font-family: var(--font-display);
-  font-size: 0.65rem;
-  font-weight: 700;
-  letter-spacing: 0.35em;
-  color: var(--dim);
-  text-transform: uppercase;
-  margin: 2rem 0 1rem;
-  display: flex;
-  align-items: center;
-  gap: 14px;
+/* ═══════════ SECTION HEADS ═══════════ */
+.sh {{
+  font-family:var(--font-d); font-size:.62rem; font-weight:700;
+  letter-spacing:.35em; color:var(--dim); text-transform:uppercase;
+  margin:2rem 0 1rem; display:flex; align-items:center; gap:14px;
 }}
-.sec-head::after {{
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--border);
-}}
-.sec-head span {{
-  color: var(--white);
-}}
+.sh::after {{ content:''; flex:1; height:1px; background:var(--border); }}
+.sh span {{ color:var(--white); }}
 
-/* ── DATA TABLE ── */
-.stDataFrame {{
-  border: 1px solid var(--border) !important;
-  border-radius: 0 !important;
-}}
-.stDataFrame table {{
-  font-family: var(--font-body) !important;
-  font-size: 0.78rem !important;
-  border-collapse: collapse !important;
-}}
+/* ═══════════ DATA TABLE ═══════════ */
+.stDataFrame {{ border:1px solid var(--border) !important; border-radius:0 !important; }}
+.stDataFrame table {{ font-family:var(--font-b) !important; font-size:.77rem !important; }}
 .stDataFrame thead th {{
-  background: var(--panel) !important;
-  color: var(--dim) !important;
-  font-size: 0.6rem !important;
-  font-weight: 700 !important;
-  letter-spacing: 0.2em !important;
-  text-transform: uppercase !important;
-  border-bottom: 1px solid var(--border) !important;
-  padding: 0.6rem 0.8rem !important;
+  background:var(--panel) !important; color:var(--dim) !important;
+  font-size:.58rem !important; font-weight:700 !important;
+  letter-spacing:.18em !important; text-transform:uppercase !important;
+  border-bottom:1px solid var(--border) !important; padding:.55rem .8rem !important;
 }}
-.stDataFrame tbody tr:hover td {{
-  background: var(--panel) !important;
-}}
+.stDataFrame tbody tr:hover td {{ background:var(--panel) !important; }}
 
-/* ── ALERTS ── */
+/* ═══════════ ALERTS ═══════════ */
 .stAlert {{
-  background: var(--panel) !important;
-  border: 1px solid var(--border2) !important;
-  border-left: 2px solid var(--red) !important;
-  border-radius: 0 !important;
-  font-family: var(--font-body) !important;
-  font-size: 0.8rem !important;
+  background:var(--panel) !important; border:1px solid var(--bord2) !important;
+  border-left:2px solid var(--red) !important; border-radius:0 !important;
+  font-family:var(--font-b) !important; font-size:.78rem !important;
 }}
 
-/* ── SPINNER ── */
-.stSpinner > div {{ border-top-color: var(--red) !important; }}
-
-/* ── DIVIDER ── */
-hr {{ border-color: var(--border) !important; margin: 1.5rem 0 !important; }}
-
-/* ── SCROLLBAR ── */
-::-webkit-scrollbar {{ width: 4px; height: 4px; }}
-::-webkit-scrollbar-track {{ background: var(--black); }}
-::-webkit-scrollbar-thumb {{ background: var(--border2); }}
-::-webkit-scrollbar-thumb:hover {{ background: var(--red); }}
-
-/* ── DOWNLOAD BUTTON ── */
+/* ═══════════ MISC ═══════════ */
+.stSpinner > div {{ border-top-color:var(--red) !important; }}
+hr {{ border-color:var(--border) !important; margin:1.5rem 0 !important; }}
+::-webkit-scrollbar {{ width:4px; height:4px; }}
+::-webkit-scrollbar-track {{ background:var(--black); }}
+::-webkit-scrollbar-thumb {{ background:var(--bord2); }}
+::-webkit-scrollbar-thumb:hover {{ background:var(--red); }}
 .stDownloadButton button {{
-  background: transparent !important;
-  border: 1px solid var(--border2) !important;
-  border-radius: 0 !important;
-  font-family: var(--font-body) !important;
-  font-size: 0.68rem !important;
-  font-weight: 700 !important;
-  letter-spacing: 0.2em !important;
-  color: var(--white) !important;
-  padding: 0.6rem 1.5rem !important;
-  transition: border-color 0.15s, background 0.15s !important;
+  background:transparent !important; border:1px solid var(--bord2) !important;
+  border-radius:0 !important; font-family:var(--font-b) !important;
+  font-size:.66rem !important; font-weight:700 !important;
+  letter-spacing:.18em !important; color:var(--white) !important;
+  padding:.58rem 1.4rem !important; transition:border-color .15s,background .15s !important;
 }}
 .stDownloadButton button:hover {{
-  border-color: var(--red) !important;
-  background: rgba(232,0,45,0.07) !important;
+  border-color:var(--red) !important; background:rgba(232,0,45,.06) !important;
 }}
-
-/* ── NUMBER INPUT ── */
 .stNumberInput input {{
-  background: var(--panel) !important;
-  border: 1px solid var(--border2) !important;
-  border-radius: 0 !important;
-  color: var(--white) !important;
-  font-family: var(--font-body) !important;
-  font-size: 0.85rem !important;
+  background:var(--panel) !important; border:1px solid var(--bord2) !important;
+  border-radius:0 !important; color:var(--white) !important;
+  font-family:var(--font-b) !important; font-size:.82rem !important;
 }}
 
-/* TYRE PILL */
-.tyre-pill {{
-  display: inline-block;
-  font-family: var(--font-display);
-  font-size: 0.55rem;
-  font-weight: 700;
-  letter-spacing: 0.2em;
-  padding: 2px 8px;
-  border-radius: 1px;
-  text-transform: uppercase;
+/* success bar */
+.sbar {{
+  background:rgba(232,0,45,.05); border:1px solid rgba(232,0,45,.15);
+  border-left:2px solid var(--red); padding:.85rem 1.4rem;
+  font-family:var(--font-b); font-size:.76rem; color:var(--dim);
+  letter-spacing:.04em; animation:fade-in .4s ease-out;
 }}
+@keyframes fade-in {{ from{{opacity:0}} to{{opacity:1}} }}
+.sbar strong {{ color:var(--white); }}
 
-/* SUCCESS BANNER */
-.success-bar {{
-  background: rgba(232,0,45,0.06);
-  border: 1px solid rgba(232,0,45,0.2);
-  border-left: 2px solid var(--red);
-  padding: 0.9rem 1.4rem;
-  font-family: var(--font-body);
-  font-size: 0.78rem;
-  color: var(--dim);
-  letter-spacing: 0.05em;
-  margin-bottom: 0;
-  animation: bar-in 0.4s ease-out;
-}}
-@keyframes bar-in {{
-  from {{ opacity: 0; }}
-  to   {{ opacity: 1; }}
-}}
-.success-bar strong {{ color: var(--white); }}
-
-/* Recommendation panel */
+/* rec panel */
 .rec-panel {{
-  background: var(--panel);
-  border: 1px solid var(--border2);
-  border-left: 3px solid var(--yellow);
-  padding: 1.2rem 1.6rem;
-  margin: 1rem 0 1.5rem;
-  animation: drv-enter 0.4s ease-out;
+  background:var(--panel); border:1px solid var(--bord2);
+  border-left:3px solid var(--yellow); padding:1.1rem 1.5rem;
+  margin:1rem 0 1.4rem; animation:drv-in .4s ease-out;
 }}
 .rec-label {{
-  font-family: var(--font-body);
-  font-size: 0.58rem;
-  font-weight: 700;
-  letter-spacing: 0.3em;
-  color: var(--dim);
-  text-transform: uppercase;
-  margin-bottom: 0.5rem;
+  font-family:var(--font-b); font-size:.56rem; font-weight:700;
+  letter-spacing:.28em; color:var(--dim); text-transform:uppercase; margin-bottom:.45rem;
+}}
+.rec-text {{ font-family:var(--font-b); font-size:.82rem; color:var(--white); line-height:1.6; }}
+.hl-red   {{ color:var(--red);    font-weight:700; }}
+.hl-gold  {{ color:var(--yellow); font-weight:700; }}
+.hl-teal  {{ color:var(--teal);   font-weight:700; }}
 
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  gap: 1rem;
-  padding: 1.5rem 0;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 1.5rem;
+/* grid panels */
+.grid2 {{ display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--border); border:1px solid var(--border); }}
+.grid3 {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:1px; background:var(--border); border:1px solid var(--border); }}
+.gpanel {{
+  background:var(--off); padding:1.2rem 1.6rem;
+  transition:background .2s;
 }}
-.rival-vs {{
-  font-family: var(--font-display);
-  font-size: 1.8rem;
-  font-weight: 700;
-  color: var(--dim2);
-  text-align: center;
-}}
+.gpanel:hover {{ background:var(--panel); }}
+.gpanel-lbl {{ font-family:var(--font-b); font-size:.56rem; font-weight:700; letter-spacing:.28em; color:var(--dim); text-transform:uppercase; margin-bottom:4px; }}
+.gpanel-val {{ font-family:var(--font-d); font-size:1.05rem; font-weight:700; color:var(--white); }}
+.gpanel-sub {{ font-family:var(--font-b); font-size:.66rem; color:var(--dim); margin-top:3px; }}
 
-/* Landing state */
-.landing-grid {{
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1px;
-  background: var(--border);
-  border: 1px solid var(--border);
-  margin: 3rem 0 2rem;
-  animation: fadeIn 0.7s ease-out;
+/* landing feature cards */
+.feat-grid {{
+  display:grid; grid-template-columns:repeat(3,1fr);
+  gap:1px; background:var(--border); border:1px solid var(--border);
+  margin:2.5rem 0 1.5rem;
+  animation:fade-in .7s ease-out;
 }}
-@keyframes fadeIn {{ from {{ opacity: 0; }} to {{ opacity: 1; }} }}
-.landing-cell {{
-  background: var(--black);
-  padding: 2.5rem 2rem;
-  transition: background 0.2s;
+.feat-card {{
+  background:var(--off); padding:2rem 1.8rem;
+  transition:background .2s; position:relative; overflow:hidden;
 }}
-.landing-cell:hover {{ background: var(--panel); }}
-.landing-num {{
-  font-family: var(--font-display);
-  font-size: 3.5rem;
-  font-weight: 700;
-  line-height: 1;
-  margin-bottom: 0.5rem;
+.feat-card:hover {{ background:var(--panel); }}
+.feat-card::before {{
+  content:''; position:absolute; top:0;left:0;right:0; height:2px;
+  background:var(--red); transform:scaleX(0); transform-origin:left;
+  transition:transform .3s ease;
 }}
-.landing-desc {{
-  font-family: var(--font-body);
-  font-size: 0.68rem;
-  font-weight: 600;
-  letter-spacing: 0.25em;
-  color: var(--dim);
-  text-transform: uppercase;
+.feat-card:hover::before {{ transform:scaleX(1); }}
+.feat-icon {{ font-size:1.4rem; margin-bottom:.75rem; }}
+.feat-title {{
+  font-family:var(--font-d); font-size:1rem; font-weight:700;
+  color:var(--white); text-transform:uppercase; letter-spacing:.04em; margin-bottom:.35rem;
+}}
+.feat-body {{
+  font-family:var(--font-b); font-size:.7rem; color:var(--dim);
+  line-height:1.55; letter-spacing:.02em;
+}}
+.feat-badge {{
+  display:inline-block; margin-top:.7rem;
+  font-family:var(--font-b); font-size:.55rem; font-weight:700;
+  letter-spacing:.18em; color:var(--red); text-transform:uppercase;
+  border:1px solid rgba(232,0,45,.25); padding:2px 8px;
 }}
 .landing-cta {{
-  background: var(--panel);
-  border: 1px solid var(--border2);
-  border-left: 2px solid var(--dim2);
-  padding: 1.2rem 1.6rem;
-  font-family: var(--font-body);
-  font-size: 0.82rem;
-  color: var(--dim);
-  animation: fadeIn 1s ease-out;
+  background:var(--panel); border:1px solid var(--bord2);
+  border-left:2px solid var(--dim2); padding:1.1rem 1.5rem;
+  font-family:var(--font-b); font-size:.8rem; color:var(--dim);
+  animation:fade-in 1s ease-out;
 }}
 
+/* rival comparison */
+.rival-compare {{
+  display:grid; grid-template-columns:1fr auto 1fr;
+  align-items:center; gap:1rem;
+  padding:1.5rem 0; border-bottom:1px solid var(--border); margin-bottom:1.5rem;
+}}
+.rival-vs {{
+  font-family:var(--font-d); font-size:1.7rem; font-weight:700;
+  color:var(--dim2); text-align:center;
+}}
+
+/* top-5 rank cards */
+.rank-card {{
+  border:1px solid var(--border); padding:.75rem 1rem;
+  margin-bottom:.45rem; background:var(--off);
+  transition:background .2s, border-color .2s;
+}}
+.rank-card:hover {{ background:var(--panel); border-color:var(--bord2); }}
+.rank-num  {{ font-family:var(--font-b); font-size:.56rem; letter-spacing:.18em; color:var(--dim); text-transform:uppercase; margin-bottom:2px; }}
+.rank-strat {{ font-family:var(--font-d); font-size:.88rem; font-weight:700; color:var(--white); letter-spacing:.04em; }}
+.rank-meta  {{ font-family:var(--font-b); font-size:.62rem; color:var(--dim); margin-top:2px; }}
+
+/* cliff badge */
+.cliff-badge {{
+  display:inline-flex; align-items:center; gap:5px;
+  font-family:var(--font-b); font-size:.58rem; font-weight:700;
+  letter-spacing:.1em; color:var(--red); text-transform:uppercase;
+  margin-top:5px;
+}}
+.cliff-none {{ color:var(--dim2); }}
+.mode-badge {{
+  display:inline-block; font-size:.55rem; font-weight:700;
+  letter-spacing:.12em; padding:1px 6px; border-radius:1px;
+  text-transform:uppercase;
+}}
 </style>
-"""
+""".format(IMG_RED=_IMG_RED, IMG_JACK=_IMG_JACK)
 
-st.markdown(_CSS.format(_IMG_RED=_IMG_RED, _IMG_JACK=_IMG_JACK), unsafe_allow_html=True)
+st.markdown(_CSS, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
 # SIDEBAR
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("""
     <div class="sb-header">
-        <div class="sb-title">Monte Carlo Engine</div>
-        <div class="sb-subtitle">F1 <span>Strategy</span><br>Intelligence</div>
+      <div class="sb-title">Monte Carlo Engine</div>
+      <div class="sb-subtitle">F1 <span>Strategy</span><br>Intelligence</div>
     </div>
     """, unsafe_allow_html=True)
 
     st.markdown('<div class="sb-section">Session</div>', unsafe_allow_html=True)
-    year = st.selectbox("SEASON", [2024, 2023, 2022], index=0, label_visibility="collapsed")
-    race = st.selectbox("GRAND PRIX", RACES_2024, index=0)
+    year = st.selectbox("SEASON", [2024,2023,2022,2021,2020,2019,2018], index=0,
+                        label_visibility="collapsed")
+
+    @st.cache_data(show_spinner=False)
+    def _get_races(y): return get_race_schedule(y)
+    race_list = _get_races(year)
+    race = st.selectbox("GRAND PRIX", race_list, index=0)
 
     st.markdown('<div class="sb-section">Driver</div>', unsafe_allow_html=True)
     driver_code = st.selectbox("SELECT DRIVER", list(DRIVERS.keys()), index=0)
     drv = DRIVERS[driver_code]
     st.markdown(f"""
     <div class="drv-card">
-        <div class="drv-color-bar" style="background:{drv['color']}"></div>
-        <div class="drv-num">{drv['num']}</div>
-        <div class="drv-info">
-            <div class="drv-first">{drv['first']}</div>
-            <div class="drv-last">{drv['name']}</div>
-            <div class="drv-team" style="color:{drv['color']}">{drv['team']}</div>
-        </div>
+      <div class="drv-bar" style="background:{drv['color']}"></div>
+      <div class="drv-num">{drv['num']}</div>
+      <div class="drv-info">
+        <div class="drv-first">{drv['first']}</div>
+        <div class="drv-last">{drv['name']}</div>
+        <div class="drv-team" style="color:{drv['color']}">{drv['team']}</div>
+      </div>
     </div>
     """, unsafe_allow_html=True)
 
     st.markdown('<div class="sb-section">Simulation</div>', unsafe_allow_html=True)
-    n_sims = st.slider("MC ITERATIONS", 100, 2000, N_SIMULATIONS, step=100)
-    stop_strategy = st.radio("STRATEGY TYPE", ["1-stop", "2-stop", "Both"])
-    noise = st.slider("LAP TIME NOISE (s)", 0.0, 1.0, 0.3, step=0.05)
+    n_sims        = st.slider("MC ITERATIONS", 100, 2000, N_SIMULATIONS, step=100)
+    stop_strategy = st.radio("STRATEGY TYPE", ["1-stop","2-stop","Both"])
+    noise         = st.slider("LAP TIME NOISE (s)", 0.0, 1.0, 0.3, step=0.05)
 
     st.markdown("<br>", unsafe_allow_html=True)
     run_btn = st.button("▶  RUN SIMULATION", use_container_width=True, type="primary")
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Sidebar footer
     st.markdown(f"""
-    <div style="padding:1rem 1.25rem;border-top:1px solid var(--border,#222);
-                font-family:'Titillium Web',sans-serif;font-size:0.58rem;
-                font-weight:600;letter-spacing:0.15em;color:#444;text-transform:uppercase">
-        {year} SEASON · {race.upper()} GP<br>
-        <span style="color:#222;margin-top:4px;display:block">POWERED BY FASTF1</span>
+    <div style="padding:.9rem 1.25rem;border-top:1px solid var(--border);
+                font-family:'Titillium Web',sans-serif;font-size:.56rem;
+                font-weight:600;letter-spacing:.14em;color:#333;text-transform:uppercase">
+      {year} SEASON · {race.upper()} GP<br>
+      <span style="color:#1e1e1e;margin-top:3px;display:block">POWERED BY FASTF1 + PWLF</span>
     </div>
     """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
 # TOP NAV
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
 st.markdown(f"""
 <div class="f1-nav">
-    <div class="f1-nav-logo">
-        <div class="f1-nav-logo-dot"></div>
-        F1 Strategy AI
-    </div>
-    <div class="f1-nav-items">
-        <div class="f1-nav-item active">Strategy</div>
-        <div class="f1-nav-item">Tyre Model</div>
-        <div class="f1-nav-item">Rival Analysis</div>
-        <div class="f1-nav-item">Lap Times</div>
-        <div class="f1-nav-item">Pit Stops</div>
-    </div>
-    <div class="f1-nav-right">
-        <span class="f1-live-badge">AI</span>
-        {year} · {race}
-    </div>
+  <div class="f1-nav-logo"><div class="f1-nav-dot"></div>F1 Strategy AI</div>
+  <div class="f1-nav-items">
+    <div class="f1-nav-item active">Strategy</div>
+    <div class="f1-nav-item">Tyre Model</div>
+    <div class="f1-nav-item">Rival Analysis</div>
+    <div class="f1-nav-item">Results</div>
+    <div class="f1-nav-item">Backtest</div>
+  </div>
+  <div class="f1-nav-right">
+    <span class="f1-live-badge">AI</span>{year} · {race}
+  </div>
 </div>
 """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
 # HERO
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
 st.markdown(f"""
-<div class="hero-section">
-    <!-- Decorative F1 car silhouette -->
-    <div class="f1-car-hero">
-        <svg width="640" height="140" viewBox="0 0 640 140" fill="white" xmlns="http://www.w3.org/2000/svg">
-            <ellipse cx="320" cy="82" rx="260" ry="24" fill="white"/>
-            <polygon points="555,82 625,79 625,85" fill="white"/>
-            <ellipse cx="312" cy="60" rx="68" ry="22" fill="white"/>
-            <rect x="279" y="44" width="64" height="6" rx="2" fill="white"/>
-            <rect x="279" y="44" width="6" height="28" rx="2" fill="white"/>
-            <rect x="337" y="44" width="6" height="28" rx="2" fill="white"/>
-            <rect x="496" y="98" width="112" height="8" rx="1" fill="white"/>
-            <rect x="489" y="84" width="8" height="24" rx="1" fill="white"/>
-            <rect x="606" y="86" width="16" height="5" rx="1" fill="white"/>
-            <rect x="606" y="100" width="16" height="5" rx="1" fill="white"/>
-            <rect x="48" y="42" width="96" height="10" rx="1" fill="white"/>
-            <rect x="72" y="52" width="48" height="5" rx="1" fill="white"/>
-            <rect x="48" y="42" width="6" height="36" rx="1" fill="white"/>
-            <rect x="138" y="42" width="6" height="36" rx="1" fill="white"/>
-            <ellipse cx="488" cy="110" rx="22" ry="22" fill="white"/>
-            <ellipse cx="488" cy="110" rx="13" ry="13" fill="black"/>
-            <ellipse cx="144" cy="112" rx="27" ry="27" fill="white"/>
-            <ellipse cx="144" cy="112" rx="16" ry="16" fill="black"/>
-
-
-        <strong style="color:{drv['color']}">{drv['first']} {drv['name']}</strong> &nbsp;·&nbsp;
-        {drv['team']}
-    </div>
+<div class="hero">
+  <div class="hero-eye">Monte Carlo Pit Stop Optimiser</div>
+  <div class="hero-h1">F1 <em>Strategy</em><br>Intelligence</div>
+  <div class="hero-meta">
+    <strong>{year}</strong> Season &nbsp;·&nbsp;
+    <strong>{race}</strong> Grand Prix &nbsp;·&nbsp;
+    <strong style="color:{drv['color']}">{drv['first']} {drv['name']}</strong>
+    &nbsp;·&nbsp; {drv['team']}
+  </div>
+  <div class="hero-car">
+    <svg width="580" height="130" viewBox="0 0 640 140" fill="white" xmlns="http://www.w3.org/2000/svg">
+      <ellipse cx="320" cy="82" rx="260" ry="24"/>
+      <polygon points="555,82 625,79 625,85"/>
+      <ellipse cx="312" cy="60" rx="68" ry="22"/>
+      <rect x="279" y="44" width="64" height="6" rx="2"/>
+      <rect x="279" y="44" width="6" height="28" rx="2"/>
+      <rect x="337" y="44" width="6" height="28" rx="2"/>
+      <rect x="496" y="98" width="112" height="8" rx="1"/>
+      <rect x="489" y="84" width="8" height="24" rx="1"/>
+      <rect x="606" y="86" width="16" height="5" rx="1"/>
+      <rect x="606" y="100" width="16" height="5" rx="1"/>
+      <rect x="48" y="42" width="96" height="10" rx="1"/>
+      <rect x="72" y="52" width="48" height="5" rx="1"/>
+      <rect x="48" y="42" width="6" height="36" rx="1"/>
+      <rect x="138" y="42" width="6" height="36" rx="1"/>
+      <ellipse cx="488" cy="110" rx="22" ry="22"/>
+      <ellipse cx="488" cy="110" rx="13" ry="13" fill="black"/>
+      <ellipse cx="144" cy="112" rx="27" ry="27"/>
+      <ellipse cx="144" cy="112" rx="16" ry="16" fill="black"/>
+    </svg>
+  </div>
 </div>
 """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# LANDING STATE
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+# LANDING STATE — animated feature cards with real capabilities
+# ═══════════════════════════════════════════════════════════════════
 if not run_btn:
-    st.markdown("""
-    <div class="landing-grid">
-        <div class="landing-cell">
-            <div class="landing-num" style="color:#e8002d">252</div>
-            <div class="landing-desc">Strategies Evaluated</div>
+    st.markdown(f"""
+    <div class="feat-grid">
+      <div class="feat-card">
+        <div class="feat-icon">◈</div>
+        <div class="feat-title">Monte Carlo Simulation</div>
+        <div class="feat-body">
+          Evaluates every valid 1-stop and 2-stop strategy combination
+          across up to <strong style="color:#f5f5f5">{n_sims:,} iterations</strong> with
+          configurable lap-time noise. Returns P10/P50/P90 distributions and
+          per-strategy win rates — not just a point estimate.
         </div>
-        <div class="landing-cell">
-            <div class="landing-num" style="color:#ffd700">1000</div>
-            <div class="landing-desc">Monte Carlo Iterations</div>
+        <div class="feat-badge">Active · {n_sims:,} sims</div>
+      </div>
+      <div class="feat-card">
+        <div class="feat-icon">◬</div>
+        <div class="feat-title">3-Phase Tyre Model</div>
+        <div class="feat-body">
+          Piecewise linear fit across <em>bedding → plateau → cliff</em> phases
+          using real FastF1 lap data. Cliff lap estimated with 95 % confidence interval.
+          Driver-specific: <strong style="color:#f5f5f5">{driver_code}</strong>'s laps
+          weighted 4× above fleet for personalised deg curves.
         </div>
-        <div class="landing-cell">
-            <div class="landing-num" style="color:#00d2be">20</div>
-            <div class="landing-desc">Driver Profiles</div>
+        <div class="feat-badge">pwlf · driver-weighted</div>
+      </div>
+      <div class="feat-card">
+        <div class="feat-icon">⊕</div>
+        <div class="feat-title">Rival Undercut Engine</div>
+        <div class="feat-body">
+          Configure any rival car's compound and tyre age, set the gap,
+          and scan a lap window for undercut EV. Returns mean EV, P10–P90 band,
+          win rate per lap, and a head-to-head Monte Carlo across candidate strategies.
         </div>
-        <div class="landing-cell">
-            <div class="landing-num" style="color:#ff8000">2</div>
-            <div class="landing-desc">Strategy Types</div>
+        <div class="feat-badge">EV + H2H MC</div>
+      </div>
+      <div class="feat-card">
+        <div class="feat-icon">▶</div>
+        <div class="feat-title">Strategy Comparison</div>
+        <div class="feat-body">
+          Ranked bar chart of top strategies coloured by first compound,
+          with mean ± std error bars and win rate labels.
+          Lap-by-lap time trace for top 3 strategies with pit stop markers.
         </div>
-        <div class="landing-cell">
-            <div class="landing-num" style="color:#6692ff">3</div>
-            <div class="landing-desc">Tyre Compounds</div>
+        <div class="feat-badge">{'1-stop' if stop_strategy == '1-stop' else '2-stop' if stop_strategy == '2-stop' else '1 + 2-stop'} mode</div>
+      </div>
+      <div class="feat-card">
+        <div class="feat-icon">⊘</div>
+        <div class="feat-title">Backtest Mode</div>
+        <div class="feat-body">
+          Reconstructs what <strong style="color:#f5f5f5">{driver_code}</strong> actually did
+          from FastF1 stint data — compound sequence, pit laps, durations —
+          and compares deterministic race time against the AI optimal strategy.
         </div>
-        <div class="landing-cell">
-            <div class="landing-num" style="color:#52e252">&lt;15s</div>
-            <div class="landing-desc">Full Simulation Time</div>
+        <div class="feat-badge">actual vs ai optimal</div>
+      </div>
+      <div class="feat-card">
+        <div class="feat-icon">◎</div>
+        <div class="feat-title">Live FastF1 Data</div>
+        <div class="feat-body">
+          Race schedule loaded dynamically for <strong style="color:#f5f5f5">{year}</strong>,
+          race laps pulled from session metadata, pit loss estimated from real
+          in/out lap timing. No hardcoded season values — every year, every circuit.
         </div>
+        <div class="feat-badge">{year} · {race} GP</div>
+      </div>
     </div>
     <div class="landing-cta">
-        Configure your session in the sidebar — select season, race, driver and simulation parameters —
-        then press <strong style="color:#f5f5f5">RUN SIMULATION</strong> to begin the analysis.
+      Select your session in the sidebar — season, race, driver and simulation parameters —
+      then press <strong style="color:#f5f5f5">▶ RUN SIMULATION</strong> to begin.
+      All {len(race_list)} {year} events available.
     </div>
     """, unsafe_allow_html=True)
     st.stop()
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
 # MATPLOTLIB THEME
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
 plt.rcParams.update({
-    "figure.facecolor":  "#000000",
-    "axes.facecolor":    "#0a0a0a",
-    "axes.edgecolor":    "#222222",
-    "axes.labelcolor":   "#666666",
-    "axes.labelsize":    8,
-    "axes.titlesize":    9,
-    "axes.titlecolor":   "#f5f5f5",
-    "xtick.color":       "#444444",
-    "ytick.color":       "#444444",
-    "xtick.labelsize":   7,
-    "ytick.labelsize":   7,
-    "text.color":        "#f5f5f5",
-    "grid.color":        "#1a1a1a",
-    "grid.linestyle":    "-",
-    "grid.linewidth":    0.5,
-    "legend.facecolor":  "#111111",
-    "legend.edgecolor":  "#222222",
-    "legend.fontsize":   7,
-    "font.family":       ["Titillium Web", "monospace"],
-    "figure.dpi":        130,
+    "figure.facecolor": "#000000", "axes.facecolor":   "#0d0d0d",
+    "axes.edgecolor":   "#1e1e1e", "axes.labelcolor":  "#555555",
+    "axes.labelsize":   8,         "axes.titlesize":   9,
+    "axes.titlecolor":  "#f5f5f5", "xtick.color":      "#444444",
+    "ytick.color":      "#444444", "xtick.labelsize":  7.5,
+    "ytick.labelsize":  7.5,       "text.color":       "#f5f5f5",
+    "grid.color":       "#1e1e1e", "grid.linestyle":   "-",
+    "grid.linewidth":   0.4,       "legend.facecolor": "#111111",
+    "legend.edgecolor": "#1e1e1e", "legend.fontsize":  7.5,
+    "font.family":      ["Titillium Web", "monospace"],
+    "figure.dpi":       130,
 })
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
 # DATA PIPELINE
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
 with st.spinner("Loading FastF1 session data…"):
     try:
-        session   = load_session(year, race)
-        laps_raw  = get_laps(session)
-        pit_stops = get_pit_stops(session)
+        session         = load_session(year, race)
+        laps_raw        = get_laps(session)
+        pit_stops       = get_pit_stops(session)
+        race_total_laps = get_race_laps(session)
+        session_drivers = get_session_drivers(session)
     except Exception as e:
         st.error(f"Failed to load session: {e}")
         st.stop()
 
 with st.spinner("Cleaning & feature engineering…"):
     laps = clean_laps(laps_raw)
-    laps = engineer_features(laps, total_laps=RACE_LAPS)
+    laps = engineer_features(laps, total_laps=race_total_laps)
 
-with st.spinner("Fitting tyre degradation model…"):
+with st.spinner("Fitting 3-phase tyre degradation model…"):
     deg_model = TyreDegModel()
-    deg_model.fit(laps)
+    deg_model.fit(laps, driver=driver_code)
     pit_loss = get_pit_loss(pit_stops)
 
 with st.spinner(f"Running {n_sims:,} Monte Carlo simulations…"):
     strategies = []
     if stop_strategy in ["1-stop", "Both"]:
-        strategies += generate_one_stop_strategies(RACE_LAPS)
+        strategies += generate_one_stop_strategies(race_total_laps)
     if stop_strategy in ["2-stop", "Both"]:
-        strategies += generate_two_stop_strategies(RACE_LAPS)
-
+        strategies += generate_two_stop_strategies(race_total_laps)
     mc_results = run_monte_carlo(
         strategies, deg_model, pit_loss,
-        n_simulations=n_sims, noise_std=noise
+        n_simulations=n_sims, noise_std=noise,
     )
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
 # SUCCESS BAR
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+best_row = mc_results.iloc[0]
 st.markdown(f"""
-<div class="success-bar">
-    ✓ &nbsp; Simulation complete —
-    <strong>{len(strategies):,} strategies</strong> evaluated across
-    <strong>{n_sims:,} Monte Carlo iterations</strong> &nbsp;·&nbsp;
-    Best: <strong>{mc_results.iloc[0]['strategy']}</strong>
+<div class="sbar">
+  ✓ &nbsp;
+  <strong>{len(strategies):,} strategies</strong> evaluated ·
+  <strong>{n_sims:,} iterations</strong> ·
+  Optimal: <strong>{best_row['strategy']}</strong> ·
+  Win rate: <strong>{best_row['win_rate']:.0%}</strong>
 </div>
 """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
 # METRIC STRIP
-# ─────────────────────────────────────────────────────────────────────────────
-best = mc_results.iloc[0]
+# ═══════════════════════════════════════════════════════════════════
 worst = mc_results.iloc[-1]
-delta = worst["mean_time"] - best["mean_time"]
+delta_vs_worst = worst["mean_time"] - best_row["mean_time"]
+cliff_soft = deg_model.cliff_lap("SOFT")
+cliff_str  = f"L{cliff_soft:.0f}" if cliff_soft else "—"
 
 st.markdown(f"""
 <div class="metric-strip">
-    <div class="metric-cell">
-        <div class="mc-label">Optimal Strategy</div>
-        <div class="mc-value accent-red" style="font-size:1.3rem;margin-top:4px">{best['strategy']}</div>
-        <div class="mc-sub">{best['pit_count']}-stop · {best['compounds']}</div>
-    </div>
-    <div class="metric-cell">
-        <div class="mc-label">Mean Race Time</div>
-        <div class="mc-value">{best['mean_time']:.1f}<span class="mc-unit">s</span></div>
-        <div class="mc-sub">± {best['std_time']:.1f}s uncertainty</div>
-    </div>
-    <div class="metric-cell">
-        <div class="mc-label">Time vs Worst</div>
-        <div class="mc-value accent-teal">+{delta:.1f}<span class="mc-unit">s</span></div>
-        <div class="mc-sub">advantage over worst strategy</div>
-    </div>
-    <div class="metric-cell">
-        <div class="mc-label">Win Rate</div>
-        <div class="mc-value accent-gold">{best['win_rate']:.1%}</div>
-        <div class="mc-sub">probability of optimal outcome</div>
-    </div>
+  <div class="mc">
+    <div class="mc-lbl">Optimal Strategy</div>
+    <div class="mc-val red" style="font-size:1.25rem;margin-top:4px">{best_row['strategy']}</div>
+    <div class="mc-sub">{best_row['pit_count']}-stop · {best_row['compounds']}</div>
+  </div>
+  <div class="mc">
+    <div class="mc-lbl">Mean Race Time</div>
+    <div class="mc-val">{best_row['mean_time']:.1f}<span class="mc-unit">s</span></div>
+    <div class="mc-sub">± {best_row['std_time']:.1f}s uncertainty</div>
+  </div>
+  <div class="mc">
+    <div class="mc-lbl">Win Rate</div>
+    <div class="mc-val gold">{best_row['win_rate']:.1%}</div>
+    <div class="mc-sub">{n_sims:,} MC iterations · p50={best_row['p50']:.1f}s</div>
+  </div>
+  <div class="mc">
+    <div class="mc-lbl">SOFT Cliff Lap</div>
+    <div class="mc-val {'red' if cliff_soft else ''}">{cliff_str}</div>
+    <div class="mc-sub">{'pit urgency rising' if cliff_soft else 'no cliff detected'}</div>
+  </div>
 </div>
 """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
 # TABS
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Strategy Comparison",
     "Undercut Window",
     "Tyre Model",
-    "Full Results",
+    "Results & Backtest",
     "Rival Analysis",
 ])
 
-# ── TAB 1: STRATEGY COMPARISON ────────────────────────────────────────────────
+# ── TAB 1: STRATEGY COMPARISON ───────────────────────────────────
 with tab1:
-    c1, c2 = st.columns([3, 1])
+    col_l, col_r = st.columns([3, 1])
 
-    with c1:
-        st.markdown('<div class="sec-head"><span>Top Strategies</span> — Mean Race Time Delta</div>', unsafe_allow_html=True)
-        fig = plot_strategy_comparison(mc_results, top_n=15, save=False)
-        st.pyplot(fig, use_container_width=True)
+    with col_l:
+        st.markdown('<div class="sh"><span>Top Strategies</span> — Mean Race Time Delta</div>', unsafe_allow_html=True)
+        fig_strat = plot_strategy_comparison(mc_results, top_n=15, save=False)
+        st.pyplot(fig_strat, use_container_width=True)
 
-    with c2:
-        st.markdown('<div class="sec-head"><span>Top 5</span></div>', unsafe_allow_html=True)
-        for i, row in mc_results.head(5).iterrows():
-            rank_color = ["#FFD700","#C0C0C0","#CD7F32","#666","#444"][i]
+    with col_r:
+        st.markdown('<div class="sh"><span>Podium</span></div>', unsafe_allow_html=True)
+        rank_colours = ["#FFD700","#C0C0C0","#CD7F32","#555","#333"]
+        for i, (_, row) in enumerate(mc_results.head(5).iterrows()):
+            rc = rank_colours[i]
             st.markdown(f"""
-            <div style="border:1px solid #1a1a1a;border-left:3px solid {rank_color};
-                        padding:0.8rem 1rem;margin-bottom:0.5rem;background:#0a0a0a;
-                        transition:background 0.2s">
-                <div style="font-family:'Titillium Web';font-size:0.58rem;letter-spacing:0.2em;
-                            color:#444;text-transform:uppercase;margin-bottom:2px">#{i+1}</div>
-                <div style="font-family:'Antonio';font-size:0.85rem;font-weight:700;
-                            color:#f5f5f5;letter-spacing:0.05em">{row['strategy']}</div>
-                <div style="font-family:'Titillium Web';font-size:0.65rem;color:#666;margin-top:3px">
-                    {row['mean_time']:.2f}s &nbsp;·&nbsp; {row['win_rate']:.1%} win
-                </div>
+            <div class="rank-card" style="border-left:3px solid {rc}">
+              <div class="rank-num">#{i+1}</div>
+              <div class="rank-strat">{row['strategy']}</div>
+              <div class="rank-meta">
+                {row['mean_time']:.2f}s &nbsp;·&nbsp;
+                {row['win_rate']:.1%} win &nbsp;·&nbsp;
+                ±{row['std_time']:.1f}s
+              </div>
             </div>
             """, unsafe_allow_html=True)
 
-    st.markdown('<div class="sec-head"><span>Lap-by-Lap Trace</span> — Top 3 Strategies</div>', unsafe_allow_html=True)
-    top3   = mc_results.head(3)
-    traces = [simulate_race(row["strategy_obj"], deg_model, pit_loss, noise_std=0.0) for _, row in top3.iterrows()]
-    fig2   = plot_lap_trace(traces, labels=list(top3["strategy"]), save=False)
-    st.pyplot(fig2, use_container_width=True)
-
-# ── TAB 2: UNDERCUT ───────────────────────────────────────────────────────────
-with tab2:
-    st.markdown('<div class="sec-head"><span>Undercut Window</span> — Optimal Pit Lap Heatmap</div>', unsafe_allow_html=True)
-    fig3 = plot_undercut_window(mc_results, RACE_LAPS, save=False)
-    if fig3:
-        st.pyplot(fig3, use_container_width=True)
-    else:
-        st.warning("No one-stop strategies found for this race configuration.")
-
-# ── TAB 3: TYRE MODEL ─────────────────────────────────────────────────────────
-with tab3:
-    col_a, col_b = st.columns([2, 1])
-    with col_a:
-        st.markdown('<div class="sec-head"><span>Degradation Curves</span> — All Compounds</div>', unsafe_allow_html=True)
-        fig4 = plot_degradation_curves(deg_model, save=False)
-        st.pyplot(fig4, use_container_width=True)
-    with col_b:
-        st.markdown('<div class="sec-head"><span>Model Summary</span></div>', unsafe_allow_html=True)
-        sumdf = deg_model.summary()
-        st.dataframe(sumdf, use_container_width=True, hide_index=True)
-
-        st.markdown('<br>', unsafe_allow_html=True)
-        st.markdown('<div class="sec-head"><span>Tyre Palette</span></div>', unsafe_allow_html=True)
-        for _, row in sumdf.iterrows():
-            cmpd  = row["Compound"]
-            color = TYRE_COLORS.get(cmpd, "#888")
-            st.markdown(f"""
-            <div style="display:flex;align-items:center;gap:10px;padding:0.5rem 0;
-                        border-bottom:1px solid #1a1a1a">
-                <div style="width:10px;height:10px;background:{color};border-radius:50%;flex-shrink:0"></div>
-                <div style="font-family:'Antonio';font-size:0.8rem;font-weight:700;
-                            color:{color};letter-spacing:0.1em">{cmpd}</div>
-                <div style="font-family:'Titillium Web';font-size:0.65rem;color:#444;margin-left:auto">
-                    {row['Baseline (s)']:.3f}s baseline
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-    st.markdown(f'<div class="sec-head"><span>Stint Scatter</span> — {driver_code} vs Model Fit</div>', unsafe_allow_html=True)
-    fig5 = plot_stint_scatter(laps, deg_model, driver=driver_code, save=False)
-    st.pyplot(fig5, use_container_width=True)
-
-# ── TAB 4: FULL RESULTS ───────────────────────────────────────────────────────
-with tab4:
-    # Quick stats row
-    n_one   = len(mc_results[mc_results["pit_count"] == 1])
-    n_two   = len(mc_results[mc_results["pit_count"] == 2])
-    best_1s = mc_results[mc_results["pit_count"] == 1].iloc[0] if n_one > 0 else None
-    best_2s = mc_results[mc_results["pit_count"] == 2].iloc[0] if n_two > 0 else None
-
-    if best_1s is not None and best_2s is not None:
-        diff = best_2s["mean_time"] - best_1s["mean_time"]
-        winner = "1-STOP" if diff > 0 else "2-STOP"
-        winner_color = "#e8002d" if diff > 0 else "#ffd700"
+        # P10/P50/P90 for best
+        st.markdown('<div class="sh"><span>Dist.</span></div>', unsafe_allow_html=True)
         st.markdown(f"""
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#1a1a1a;
-                    border:1px solid #1a1a1a;margin-bottom:1.5rem">
-            <div style="background:#0a0a0a;padding:1.2rem 1.6rem">
-                <div style="font-family:'Titillium Web';font-size:0.58rem;font-weight:700;
-                            letter-spacing:0.3em;color:#666;text-transform:uppercase;margin-bottom:4px">
-                    Best 1-Stop
-                </div>
-                <div style="font-family:'Antonio';font-size:1.3rem;font-weight:700;color:#e8002d">
-                    {best_1s['strategy']}
-                </div>
-                <div style="font-family:'Titillium Web';font-size:0.7rem;color:#444;margin-top:2px">
-                    {best_1s['mean_time']:.2f}s · {best_1s['win_rate']:.1%} win rate
-                </div>
-            </div>
-            <div style="background:#0a0a0a;padding:1.2rem 1.6rem">
-                <div style="font-family:'Titillium Web';font-size:0.58rem;font-weight:700;
-                            letter-spacing:0.3em;color:#666;text-transform:uppercase;margin-bottom:4px">
-                    Best 2-Stop
-                </div>
-                <div style="font-family:'Antonio';font-size:1.3rem;font-weight:700;color:#ffd700">
-                    {best_2s['strategy']}
-                </div>
-                <div style="font-family:'Titillium Web';font-size:0.7rem;color:#444;margin-top:2px">
-                    {best_2s['mean_time']:.2f}s · {best_2s['win_rate']:.1%} win rate
-                </div>
-            </div>
-        </div>
-        <div style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid {winner_color};
-                    padding:0.8rem 1.4rem;margin-bottom:1.5rem;font-family:'Titillium Web';
-                    font-size:0.78rem;color:#666">
-            <strong style="color:{winner_color}">{winner}</strong> is faster by
-            <strong style="color:#f5f5f5">{abs(diff):.2f}s</strong> in expectation
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:var(--border);border:1px solid var(--border)">
+          <div style="background:var(--off);padding:.8rem .9rem;text-align:center">
+            <div style="font-family:'Titillium Web';font-size:.52rem;font-weight:700;letter-spacing:.2em;color:var(--dim);text-transform:uppercase">P10</div>
+            <div style="font-family:'Antonio';font-size:1rem;font-weight:700;color:#4c9be8">{best_row['p10']:.1f}s</div>
+          </div>
+          <div style="background:var(--off);padding:.8rem .9rem;text-align:center">
+            <div style="font-family:'Titillium Web';font-size:.52rem;font-weight:700;letter-spacing:.2em;color:var(--dim);text-transform:uppercase">P50</div>
+            <div style="font-family:'Antonio';font-size:1rem;font-weight:700;color:#f5f5f5">{best_row['p50']:.1f}s</div>
+          </div>
+          <div style="background:var(--off);padding:.8rem .9rem;text-align:center">
+            <div style="font-family:'Titillium Web';font-size:.52rem;font-weight:700;letter-spacing:.2em;color:var(--dim);text-transform:uppercase">P90</div>
+            <div style="font-family:'Antonio';font-size:1rem;font-weight:700;color:#e8002d">{best_row['p90']:.1f}s</div>
+          </div>
         </div>
         """, unsafe_allow_html=True)
 
-    st.markdown('<div class="sec-head"><span>Monte Carlo Results</span> — All Strategies</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sh"><span>Lap Trace</span> — Top 3 Strategies</div>', unsafe_allow_html=True)
+    top3   = mc_results.head(3)
+    traces = [simulate_race(row["strategy_obj"], deg_model, pit_loss, noise_std=0.0)
+              for _, row in top3.iterrows()]
+    fig_trace = plot_lap_trace(traces, labels=list(top3["strategy"]), save=False)
+    st.pyplot(fig_trace, use_container_width=True)
+
+# ── TAB 2: UNDERCUT WINDOW ────────────────────────────────────────
+with tab2:
+    st.markdown('<div class="sh"><span>Undercut Window</span> — Pit Lap Heatmap by Compound Pair</div>', unsafe_allow_html=True)
+    fig_uw = plot_undercut_window(mc_results, race_total_laps, save=False)
+    if fig_uw:
+        st.pyplot(fig_uw, use_container_width=True)
+        # Key insight block
+        one_stop = mc_results[mc_results["pit_count"] == 1]
+        if not one_stop.empty:
+            best_1s = one_stop.iloc[0]
+            try:
+                best_pit = int(str(best_1s['strategy']).split("(")[1].split(")")[0])
+                window_lo = max(1, best_pit - 3)
+                window_hi = min(race_total_laps, best_pit + 3)
+                st.markdown(f"""
+                <div class="rec-panel">
+                  <div class="rec-label">Optimal Pit Window</div>
+                  <div class="rec-text">
+                    Best 1-stop: <span class="hl-red">{best_1s['strategy']}</span>
+                    &nbsp;·&nbsp; Pit lap <span class="hl-gold">{best_pit}</span>
+                    &nbsp;·&nbsp; Window <span class="hl-teal">L{window_lo}–L{window_hi}</span>
+                    &nbsp;·&nbsp; Win rate <span class="hl-red">{best_1s['win_rate']:.0%}</span>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+            except Exception:
+                pass
+    else:
+        st.warning("No 1-stop strategies found — switch strategy type to include 1-stop.")
+
+# ── TAB 3: TYRE MODEL ────────────────────────────────────────────
+with tab3:
+    col_a, col_b = st.columns([2.2, 1])
+    with col_a:
+        st.markdown('<div class="sh"><span>Degradation Curves</span> — 3-Phase Piecewise Model</div>', unsafe_allow_html=True)
+        fig_deg = plot_degradation_curves(deg_model, save=False)
+        st.pyplot(fig_deg, use_container_width=True)
+
+    with col_b:
+        st.markdown('<div class="sh"><span>Model Summary</span></div>', unsafe_allow_html=True)
+        sumdf = deg_model.summary()
+        st.dataframe(sumdf, use_container_width=True, hide_index=True)
+
+        st.markdown('<div class="sh"><span>Compound Detail</span></div>', unsafe_allow_html=True)
+        for _, row in sumdf.iterrows():
+            cmpd         = row["Compound"]
+            color        = TYRE_COLORS.get(cmpd, "#888")
+            cliff_val    = row.get("Cliff lap", "—")
+            cliff_ci_val = row.get("Cliff CI (95%)", "—")
+            fit_mode     = row.get("Fit mode", "")
+            n_laps       = row.get("Training laps", "")
+            mode_color   = {"full":"#39B54A","fallback":"#FFD700"}.get(fit_mode, "#333")
+
+            if cliff_val != "—":
+                cliff_html = f"""<div class="cliff-badge">⚠ cliff ~L{cliff_val} &nbsp;·&nbsp; 95% CI {cliff_ci_val}</div>"""
+            else:
+                cliff_html = '<div class="cliff-badge cliff-none">no cliff detected</div>'
+
+            st.markdown(f"""
+            <div style="padding:.65rem 0;border-bottom:1px solid #111">
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <div style="width:9px;height:9px;background:{color};border-radius:50%;flex-shrink:0"></div>
+                <div style="font-family:'Antonio';font-size:.82rem;font-weight:700;color:{color};letter-spacing:.1em">{cmpd}</div>
+                <div style="margin-left:auto;display:flex;gap:6px;align-items:center">
+                  <span style="font-family:'Titillium Web';font-size:.6rem;color:#333">{row['Baseline (s)']:.3f}s</span>
+                  <span class="mode-badge" style="color:{mode_color};border:1px solid {mode_color}">{fit_mode} · {n_laps}L</span>
+                </div>
+              </div>
+              {cliff_html}
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.markdown(f'<div class="sh"><span>Stint Scatter</span> — {driver_code} vs Model Fit</div>', unsafe_allow_html=True)
+    fig_scatter = plot_stint_scatter(laps, deg_model, driver=driver_code, save=False)
+    if fig_scatter:
+        st.pyplot(fig_scatter, use_container_width=True)
+
+    st.markdown('<div class="sh"><span>Phase Slopes</span> — Compound × Phase Breakdown</div>', unsafe_allow_html=True)
+    phase_rows = []
+    for cmpd in COMPOUNDS:
+        ps = deg_model.phase_slopes(cmpd)
+        if ps:
+            phase_rows.append({"Compound": cmpd, **{k.capitalize(): f"{v:+.4f} s/L" for k,v in ps.items()}})
+    if phase_rows:
+        st.dataframe(pd.DataFrame(phase_rows), use_container_width=True, hide_index=True)
+
+# ── TAB 4: RESULTS & BACKTEST ────────────────────────────────────
+with tab4:
+    # 1-stop vs 2-stop summary
+    n1 = len(mc_results[mc_results["pit_count"] == 1])
+    n2 = len(mc_results[mc_results["pit_count"] == 2])
+    b1 = mc_results[mc_results["pit_count"] == 1].iloc[0] if n1 > 0 else None
+    b2 = mc_results[mc_results["pit_count"] == 2].iloc[0] if n2 > 0 else None
+
+    if b1 is not None and b2 is not None:
+        diff      = b2["mean_time"] - b1["mean_time"]
+        w_label   = "1-STOP" if diff > 0 else "2-STOP"
+        w_color   = "#e8002d" if diff > 0 else "#ffd700"
+        st.markdown(f"""
+        <div class="grid2" style="margin-bottom:1rem">
+          <div class="gpanel">
+            <div class="gpanel-lbl">Best 1-Stop</div>
+            <div class="gpanel-val" style="color:#e8002d">{b1['strategy']}</div>
+            <div class="gpanel-sub">{b1['mean_time']:.2f}s · {b1['win_rate']:.1%} win · ±{b1['std_time']:.1f}s</div>
+          </div>
+          <div class="gpanel">
+            <div class="gpanel-lbl">Best 2-Stop</div>
+            <div class="gpanel-val" style="color:#ffd700">{b2['strategy']}</div>
+            <div class="gpanel-sub">{b2['mean_time']:.2f}s · {b2['win_rate']:.1%} win · ±{b2['std_time']:.1f}s</div>
+          </div>
+        </div>
+        <div style="background:var(--off);border:1px solid var(--border);border-left:3px solid {w_color};
+                    padding:.8rem 1.4rem;margin-bottom:1.5rem;font-family:'Titillium Web';font-size:.78rem;color:var(--dim)">
+          <strong style="color:{w_color}">{w_label}</strong> is faster in expectation by
+          <strong style="color:#f5f5f5">{abs(diff):.2f}s</strong>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown('<div class="sh"><span>Full Results Table</span> — All Strategies Ranked</div>', unsafe_allow_html=True)
     display_cols = ["strategy","mean_time","std_time","p10","p50","p90","pit_count","compounds","win_rate"]
     st.dataframe(
         mc_results[display_cols].style.format({
             "mean_time":"{:.2f}","std_time":"{:.2f}",
             "p10":"{:.2f}","p50":"{:.2f}","p90":"{:.2f}",
             "win_rate":"{:.2%}",
-        }).bar(subset=["win_rate"], color=["#1a0008","#e8002d"])
-         .bar(subset=["mean_time"], color=["#001a00","#229971"]),
+        })
+        .bar(subset=["win_rate"], color=["#1a0008","#e8002d"])
+        .bar(subset=["mean_time"], color=["#001a00","#1a4a2a"]),
         use_container_width=True, hide_index=True,
     )
     st.markdown("<br>", unsafe_allow_html=True)
@@ -1231,109 +1021,187 @@ with tab4:
         mime="text/csv",
     )
 
-# ── TAB 5: RIVAL ANALYSIS ─────────────────────────────────────────────────────
+    # ── BACKTEST ──────────────────────────────────────────────────
+    st.markdown('<div class="sh"><span>Backtest</span> — AI Optimal vs Actual Race Strategy</div>', unsafe_allow_html=True)
+    try:
+        dl = laps_raw[laps_raw["Driver"] == driver_code].copy()
+        actual_stints: list[tuple[str,int]] = []
+        if "Compound" in dl.columns and "TyreLife" in dl.columns:
+            dl = dl.sort_values("LapNumber").reset_index(drop=True)
+            dl["_sc"] = (dl["TyreLife"].diff() < 0).cumsum()
+            for _, grp in dl.groupby("_sc"):
+                cmpd = grp["Compound"].mode()[0] if not grp["Compound"].empty else "HARD"
+                dur  = len(grp)
+                if dur > 0:
+                    actual_stints.append((cmpd, dur))
+
+        if len(actual_stints) >= 2:
+            actual_strat  = Strategy(stints=[Stint(c,d) for c,d in actual_stints])
+            actual_res    = simulate_race(actual_strat, deg_model, pit_loss, noise_std=0.0)
+            optimal_res   = simulate_race(mc_results.iloc[0]["strategy_obj"], deg_model, pit_loss, noise_std=0.0)
+            delta_s       = actual_res["total_time"] - optimal_res["total_time"]
+            d_sign        = "+" if delta_s > 0 else ""
+            d_color       = "#e8002d" if delta_s > 0.5 else ("#39b54a" if delta_s < -0.5 else "#ffd700")
+            verdict       = "suboptimal" if delta_s > 0.5 else ("near-optimal" if abs(delta_s) <= 0.5 else "optimal")
+
+            st.markdown(f"""
+            <div class="grid3" style="margin-bottom:1rem">
+              <div class="gpanel">
+                <div class="gpanel-lbl">Actual — {driver_code}</div>
+                <div class="gpanel-val">{actual_strat}</div>
+                <div class="gpanel-sub">Pit laps: {', '.join(str(l) for l in actual_res['pit_laps']) or 'none recorded'}</div>
+              </div>
+              <div class="gpanel">
+                <div class="gpanel-lbl">AI Optimal</div>
+                <div class="gpanel-val" style="color:#e8002d">{mc_results.iloc[0]['strategy']}</div>
+                <div class="gpanel-sub">
+                  Pit laps: {', '.join(str(l) for l in optimal_res['pit_laps'])}
+                  · {mc_results.iloc[0]['win_rate']:.0%} win rate
+                </div>
+              </div>
+              <div class="gpanel" style="border-left:3px solid {d_color}">
+                <div class="gpanel-lbl">Delta</div>
+                <div style="font-family:'Antonio';font-size:2rem;font-weight:700;color:{d_color};line-height:1">{d_sign}{delta_s:.2f}s</div>
+                <div class="gpanel-sub">Actual was <strong style="color:{d_color}">{verdict}</strong></div>
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            fig_bt = plot_lap_trace(
+                [actual_res, optimal_res],
+                labels=[f"Actual ({driver_code})", "AI Optimal"],
+                save=False,
+            )
+            st.pyplot(fig_bt, use_container_width=True)
+        else:
+            st.info("Insufficient stint data to reconstruct the actual strategy for this driver/race.")
+    except Exception as e:
+        st.warning(f"Backtest unavailable: {e}")
+
+# ── TAB 5: RIVAL ANALYSIS ────────────────────────────────────────
 with tab5:
-    rival_drivers = [k for k in DRIVERS if k != driver_code]
+    if session_drivers:
+        rival_pool = [k for k in session_drivers if k != driver_code and k in DRIVERS]
+        if not rival_pool:
+            rival_pool = [k for k in DRIVERS if k != driver_code]
+    else:
+        rival_pool = [k for k in DRIVERS if k != driver_code]
 
-    st.markdown('<div class="sec-head"><span>Rival Configuration</span></div>', unsafe_allow_html=True)
+    st.markdown('<div class="sh"><span>Rival Configuration</span></div>', unsafe_allow_html=True)
 
-    c1, c2, c3 = st.columns(3)
-    rival_code     = c1.selectbox("Rival driver", rival_drivers)
-    rival_compound = c2.selectbox("Rival compound", ["SOFT","MEDIUM","HARD"], index=1)
-    rival_tyre_age = c3.slider("Rival tyre age (laps)", 1, 35, 10)
+    rc1, rc2, rc3 = st.columns(3)
+    rival_code     = rc1.selectbox("Rival driver", rival_pool)
+    rival_compound = rc2.selectbox("Rival compound", ["SOFT","MEDIUM","HARD"], index=1)
+    rival_tyre_age = rc3.slider("Rival tyre age (laps)", 1, 35, 10)
 
-    rival_drv = DRIVERS[rival_code]
+    rival_drv = DRIVERS.get(rival_code, {"color":"#888","num":"?","name":rival_code,"first":"","team":""})
 
-    # Visual head-to-head comparison
     st.markdown(f"""
     <div class="rival-compare">
-        <div>
-            <div style="font-family:'Titillium Web';font-size:0.58rem;font-weight:700;
-                        letter-spacing:0.3em;color:#444;text-transform:uppercase;margin-bottom:6px">You</div>
-            <div style="display:flex;align-items:center;gap:10px">
-                <div style="width:4px;height:40px;background:{drv['color']}"></div>
-                <div>
-                    <div style="font-family:'Antonio';font-size:1.4rem;font-weight:700;
-                                color:{drv['color']};line-height:1">{drv['num']}</div>
-                    <div style="font-family:'Antonio';font-size:0.9rem;color:#f5f5f5">{drv['name']}</div>
-                    <div style="font-family:'Titillium Web';font-size:0.6rem;color:#444;
-                                letter-spacing:0.1em">{drv['team']}</div>
-                </div>
-            </div>
+      <div>
+        <div style="font-family:'Titillium Web';font-size:.56rem;font-weight:700;letter-spacing:.25em;color:#333;text-transform:uppercase;margin-bottom:6px">You</div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="width:4px;height:44px;background:{drv['color']}"></div>
+          <div>
+            <div style="font-family:'Antonio';font-size:1.4rem;font-weight:700;color:{drv['color']};line-height:1">{drv['num']}</div>
+            <div style="font-family:'Antonio';font-size:.92rem;color:#f5f5f5">{drv['name']}</div>
+            <div style="font-family:'Titillium Web';font-size:.58rem;color:#444;letter-spacing:.1em">{drv['team']}</div>
+          </div>
         </div>
-        <div class="rival-vs">VS</div>
-        <div>
-            <div style="font-family:'Titillium Web';font-size:0.58rem;font-weight:700;
-                        letter-spacing:0.3em;color:#444;text-transform:uppercase;margin-bottom:6px">Rival</div>
-            <div style="display:flex;align-items:center;gap:10px">
-                <div style="width:4px;height:40px;background:{rival_drv['color']}"></div>
-                <div>
-                    <div style="font-family:'Antonio';font-size:1.4rem;font-weight:700;
-                                color:{rival_drv['color']};line-height:1">{rival_drv['num']}</div>
-                    <div style="font-family:'Antonio';font-size:0.9rem;color:#f5f5f5">{rival_drv['name']}</div>
-                    <div style="font-family:'Titillium Web';font-size:0.6rem;color:#444;
-                                letter-spacing:0.1em">{rival_drv['team']} ·
-                        <span style="color:{TYRE_COLORS.get(rival_compound,'#888')}">{rival_compound}</span>
-                        · Lap {rival_tyre_age}
-                    </div>
-                </div>
+      </div>
+      <div class="rival-vs">VS</div>
+      <div>
+        <div style="font-family:'Titillium Web';font-size:.56rem;font-weight:700;letter-spacing:.25em;color:#333;text-transform:uppercase;margin-bottom:6px">Rival</div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="width:4px;height:44px;background:{rival_drv['color']}"></div>
+          <div>
+            <div style="font-family:'Antonio';font-size:1.4rem;font-weight:700;color:{rival_drv['color']};line-height:1">{rival_drv['num']}</div>
+            <div style="font-family:'Antonio';font-size:.92rem;color:#f5f5f5">{rival_drv['name']}</div>
+            <div style="font-family:'Titillium Web';font-size:.58rem;color:#444;letter-spacing:.1em">
+              {rival_drv['team']}
+              &nbsp;·&nbsp;<span style="color:{TYRE_COLORS.get(rival_compound,'#888')}">{rival_compound}</span>
+              &nbsp;·&nbsp;L{rival_tyre_age}
             </div>
+          </div>
         </div>
+      </div>
     </div>
     """, unsafe_allow_html=True)
 
-    c4, c5 = st.columns(2)
-    gap_to_rival  = c4.number_input("Gap to rival (s, + = they lead)", value=2.0, step=0.5)
-    scan_from_lap = c5.slider("Scan window start (lap)", 1, 40, 15)
-    scan_to_lap   = st.slider("Scan window end (lap)", scan_from_lap + 1, 55, min(scan_from_lap + 15, 40))
-    new_compound  = st.selectbox("Compound to fit on our pit", ["SOFT","MEDIUM","HARD"], index=1)
+    ra1, ra2 = st.columns(2)
+    gap_to_rival  = ra1.number_input("Gap to rival (s, + = they lead)", value=2.0, step=0.5)
+    scan_from_lap = ra2.slider("Scan window start (lap)", 1, race_total_laps - 10, 15)
+    scan_to_lap   = st.slider("Scan window end (lap)", scan_from_lap + 1,
+                               race_total_laps - 2, min(scan_from_lap + 15, race_total_laps - 2))
+
+    rb1, rb2 = st.columns(2)
+    our_compound_now = rb1.selectbox("Our current compound", ["SOFT","MEDIUM","HARD"], index=1)
+    our_tyre_age_now = rb2.slider("Our tyre age (laps)", 1, 35, 10)
+    new_compound     = st.selectbox("Compound to fit after pit", ["SOFT","MEDIUM","HARD"], index=2)
 
     if st.button("▶  RUN RIVAL ANALYSIS", use_container_width=True):
         rival = RivalState(
-            driver=rival_code,
-            compound=rival_compound,
-            tyre_age=rival_tyre_age,
-            gap_to_us=gap_to_rival,
+            driver=rival_code, compound=rival_compound,
+            tyre_age=rival_tyre_age, gap_to_us=gap_to_rival,
         )
 
         with st.spinner("Scanning undercut window…"):
             scan_df = scan_undercut_window(
                 from_lap=scan_from_lap, to_lap=scan_to_lap,
-                our_compound=rival_compound,
-                our_tyre_age_at_from_lap=rival_tyre_age,
+                our_compound=our_compound_now,
+                our_tyre_age_at_from_lap=our_tyre_age_now,
                 new_compound=new_compound,
                 rival=rival,
                 deg_model=deg_model, pit_loss=pit_loss,
                 n_simulations=200, noise_std=noise,
             )
 
-        recommended = scan_df[scan_df["recommend"]]
-        if not recommended.empty:
-            best_lap = recommended.iloc[recommended["mean_ev"].argmax()]
+        rec = scan_df[scan_df["recommend"]]
+        if not rec.empty:
+            best_lap = rec.iloc[rec["mean_ev"].argmax()]
             st.markdown(f"""
             <div class="rec-panel">
-                <div class="rec-label">AI Recommendation</div>
-                <div class="rec-text">
-                    Pit window: Laps <span class="hl-red">{recommended['lap'].min()}–{recommended['lap'].max()}</span>
-                    &nbsp;·&nbsp; Best lap:
-                    <span class="hl-red">{int(best_lap['lap'])}</span>
-                    &nbsp;·&nbsp; Expected gain:
-                    <span class="hl">+{best_lap['mean_ev']:.2f}s</span>
-                    &nbsp;·&nbsp; Win rate:
-                    <span class="hl-teal">{best_lap['win_rate']:.0%}</span>
-                </div>
+              <div class="rec-label">AI Undercut Recommendation</div>
+              <div class="rec-text">
+                Window: Laps <span class="hl-red">{rec['lap'].min()}–{rec['lap'].max()}</span>
+                &nbsp;·&nbsp; Optimal lap: <span class="hl-gold">L{int(best_lap['lap'])}</span>
+                &nbsp;·&nbsp; EV: <span class="hl-teal">+{best_lap['mean_ev']:.2f}s</span>
+                &nbsp;·&nbsp; Win rate: <span class="hl-red">{best_lap['win_rate']:.0%}</span>
+                &nbsp;·&nbsp; P10–P90: [{best_lap['p10_ev']:.2f}s, {best_lap['p90_ev']:.2f}s]
+              </div>
             </div>
             """, unsafe_allow_html=True)
         else:
-            st.warning("No undercut window found — overcut or hold position recommended.")
+            st.warning("No positive-EV undercut window found — consider overcut or hold position.")
 
-        st.markdown('<div class="sec-head"><span>Undercut EV Timeline</span></div>', unsafe_allow_html=True)
-        fig_ev = plot_undercut_ev_timeline(scan_df, rival_driver=rival_code, our_driver=driver_code, save=False)
+        st.markdown('<div class="sh"><span>EV Timeline</span> — Undercut Expected Value by Lap</div>', unsafe_allow_html=True)
+        fig_ev = plot_undercut_ev_timeline(scan_df, rival_driver=rival_code,
+                                            our_driver=driver_code, save=False)
         st.pyplot(fig_ev, use_container_width=True)
 
-        st.markdown(f'<div class="sec-head"><span>Head-to-Head</span> — Win Rate vs {rival_code}</div>', unsafe_allow_html=True)
-        cand = generate_one_stop_strategies(RACE_LAPS)[:50]
-        rival_strat = generate_one_stop_strategies(RACE_LAPS)[0]
+        # Raw scan data
+        with st.expander("📋 Raw Scan Data"):
+            st.dataframe(
+                scan_df.style.format({
+                    "mean_ev":"{:.3f}","p10_ev":"{:.3f}","p90_ev":"{:.3f}","win_rate":"{:.1%}"
+                }),
+                use_container_width=True, hide_index=True,
+            )
+
+        # H2H Monte Carlo
+        st.markdown(f'<div class="sh"><span>Head-to-Head</span> — Win Rate vs {rival_code}</div>', unsafe_allow_html=True)
+        cand = generate_one_stop_strategies(race_total_laps)[:50]
+
+        rival_remaining   = race_total_laps - scan_from_lap
+        rival_on_current  = min(rival_remaining, max(5, rival_remaining // 2))
+        if rival_remaining > 10:
+            alt = "HARD" if rival_compound != "HARD" else "MEDIUM"
+            rival_strat = Strategy(stints=[
+                Stint(rival_compound, rival_on_current),
+                Stint(alt, rival_remaining - rival_on_current),
+            ])
+        else:
+            rival_strat = generate_one_stop_strategies(race_total_laps)[0]
 
         with st.spinner("Running head-to-head Monte Carlo…"):
             h2h = run_rival_monte_carlo(
@@ -1343,13 +1211,23 @@ with tab5:
             )
 
         fig_h2h = plot_head_to_head_mc(
-            {row["strategy"]: row["win_rate"] for _, row in h2h.head(10).iterrows()},
+            {row["strategy"]: row["win_rate"] for _, row in h2h.head(12).iterrows()},
             rival_driver=rival_code, save=False,
         )
         st.pyplot(fig_h2h, use_container_width=True)
 
-        st.markdown('<div class="sec-head"><span>Scan Data</span></div>', unsafe_allow_html=True)
-        st.dataframe(
-            scan_df.style.format({"mean_ev":"{:.3f}","p10_ev":"{:.3f}","p90_ev":"{:.3f}","win_rate":"{:.1%}"}),
-            use_container_width=True, hide_index=True,
-        )
+        # Best H2H strategy callout
+        if not h2h.empty:
+            best_h2h = h2h.iloc[0]
+            h2h_color = "#39b54a" if best_h2h["win_rate"] >= 0.5 else "#e8002d"
+            verdict   = "favourable" if best_h2h["win_rate"] >= 0.5 else "unfavourable"
+            st.markdown(f"""
+            <div class="rec-panel">
+              <div class="rec-label">H2H Summary vs {rival_code}</div>
+              <div class="rec-text">
+                Best strategy: <span class="hl-red">{best_h2h['strategy']}</span>
+                &nbsp;·&nbsp; Win rate: <span style="color:{h2h_color};font-weight:700">{best_h2h['win_rate']:.0%}</span>
+                &nbsp;·&nbsp; Matchup is <span style="color:{h2h_color};font-weight:700">{verdict}</span>
+              </div>
+            </div>
+            """, unsafe_allow_html=True)

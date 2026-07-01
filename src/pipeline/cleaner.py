@@ -69,7 +69,7 @@ def remove_lap_time_outliers(laps: pd.DataFrame,
         z = (group[col] - mean).abs() / std
         return group[z < z_threshold]
 
-    laps = laps.groupby("Compound", group_keys=False).apply(_filter_group)
+    laps = laps.groupby("Compound", group_keys=False).apply(_filter_group, include_groups=False).reset_index(drop=True)
     log.info(f"Outlier laps removed: {before - len(laps)} ({len(laps)} remain)")
     return laps.reset_index(drop=True)
 

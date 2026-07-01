@@ -79,7 +79,8 @@ def add_deg_delta(laps: pd.DataFrame) -> pd.DataFrame:
     col = "FuelCorrectedLapTime" if "FuelCorrectedLapTime" in laps.columns else "LapTimeSec"
     laps = (
         laps.groupby(["Driver", "StintNumber"], group_keys=False)
-        .apply(_stint_delta)
+        .apply(_stint_delta, include_groups=False)
+        .reset_index(drop=True)
     )
     return laps
 

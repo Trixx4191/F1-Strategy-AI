@@ -69,6 +69,56 @@ def get_laps(session: fastf1.core.Session,
     return laps.reset_index(drop=True)
 
 
+def get_race_schedule(year: int) -> list[str]:
+    """
+    Fetch the list of race event names for a given season via FastF1.
+
+    Returns a list of event names in calendar order (e.g. ["Bahrain", "Saudi Arabia", ...]).
+    Falls back to a hardcoded 2024 list if the API call fails so the UI never breaks.
+    """
+    try:
+        schedule = fastf1.get_event_schedule(year, include_testing=False)
+        # 'EventName' column contains the full GP name; strip " Grand Prix" suffix
+        names = schedule["EventName"].str.replace(" Grand Prix", "", regex=False).str.strip().tolist()
+        log.info(f"Loaded {len(names)} events for {year} season")
+        return names
+    except Exception as e:
+        log.warning(f"Could not fetch {year} schedule from FastF1: {e} — using fallback list")
+        return [
+            "Bahrain", "Saudi Arabia", "Australia", "Japan", "China",
+            "Miami", "Emilia Romagna", "Monaco", "Canada", "Spain",
+            "Austria", "Great Britain", "Hungary", "Belgium", "Netherlands",
+            "Italian", "Azerbaijan", "Singapore", "United States",
+            "Mexico City", "São Paulo", "Las Vegas", "Qatar", "Abu Dhabi",
+        ]
+
+
+def get_session_drivers(session: fastf1.core.Session) -> list[str]:
+    """
+    Return list of driver codes who actually participated in this session.
+    Used to filter the driver selector to only relevant drivers.
+    """
+    try:
+        return sorted(session.laps["Driver"].unique().tolist())
+    except Exception:
+        return []
+
+
+def get_race_laps(session: fastf1.core.Session) -> int:
+    """
+    Return the total number of laps in the race from session data.
+    Falls back to config RACE_LAPS if not available.
+    """
+    from src.utils.config import RACE_LAPS
+    try:
+        total = int(session.laps["LapNumber"].max())
+        if total > 0:
+            return total
+    except Exception:
+        pass
+    return RACE_LAPS
+
+
 def get_pit_stops(session: fastf1.core.Session) -> pd.DataFrame:
     """
     Extract pit stop events with timing from the laps DataFrame.
