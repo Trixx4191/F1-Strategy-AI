@@ -148,3 +148,139 @@ class TestLoader:
         result = get_laps(mock_session, driver="VER")
         assert "LapTimeSec" in result.columns
         assert result["LapTimeSec"].dtype == float
+
+
+# ── Column preservation regression tests ────────────────────────────────────
+#
+# groupby().apply(..., include_groups=False) silently drops the grouping
+# column(s) from the result. This previously caused "Compound" to vanish
+# from clean_laps() output, and BOTH "Driver" and "StintNumber" to vanish
+# from engineer_features() output — breaking every downstream consumer that
+# filters or groups by those columns (tyre_deg.py's driver-weighted fit,
+# the dashboard's driver selector, etc). These tests guard against that
+# class of regression by explicitly checking the full pipeline's output
+# schema with MULTI-DRIVER data (a single-driver fixture wouldn't catch
+# the Driver-column-loss case, since a 1-driver groupby "losing" Driver
+# is invisible if nothing downstream ever filters by it in the test).
+
+def make_multidriver_laps(n_per_driver: int = 30) -> pd.DataFrame:
+    """Multi-driver, multi-stint fake laps — needed to catch column-loss
+    regressions in groupby operations keyed on Driver/StintNumber/Compound."""
+    rng = np.random.default_rng(7)
+    rows = []
+    for driver, base in [("VER", 90.0), ("HAM", 90.3), ("LEC", 90.15)]:
+        tyre_age = 0
+        stint_switch_at = n_per_driver // 2
+        for lap_num in range(1, n_per_driver + 1):
+            tyre_age = tyre_age + 1 if lap_num != stint_switch_at else 1
+            compound = "SOFT" if lap_num < stint_switch_at else "HARD"
+            rows.append({
+                "Driver": driver,
+                "LapNumber": lap_num,
+                "LapTimeSec": base + 0.05 * tyre_age + rng.normal(0, 0.3),
+                "Compound": compound,
+                "TyreLife": tyre_age,
+                "IsAccurate": True,
+                "TrackStatus": "1",
+                "PitInTime": pd.NaT,
+                "PitOutTime": pd.NaT,
+            })
+    return pd.DataFrame(rows)
+
+
+class TestPipelineColumnPreservation:
+    """Guards against groupby().apply() silently dropping grouping columns."""
+
+    def test_clean_laps_preserves_compound_column(self):
+        from src.pipeline.cleaner import clean_laps
+        laps = make_multidriver_laps()
+        cleaned = clean_laps(laps)
+        assert "Compound" in cleaned.columns, (
+            "Compound column was dropped during cleaning — "
+            "check remove_lap_time_outliers for groupby() column loss"
+        )
+
+    def test_clean_laps_compound_values_intact(self):
+        from src.pipeline.cleaner import clean_laps
+        laps = make_multidriver_laps()
+        cleaned = clean_laps(laps)
+        assert set(cleaned["Compound"].unique()) <= {"SOFT", "MEDIUM", "HARD"}
+        assert len(cleaned) > 0
+
+    def test_engineer_features_preserves_driver_column(self):
+        from src.pipeline.cleaner import clean_laps
+        from src.pipeline.features import engineer_features
+        laps = make_multidriver_laps()
+        cleaned = clean_laps(laps)
+        result = engineer_features(cleaned, total_laps=30)
+        assert "Driver" in result.columns, (
+            "Driver column was dropped during feature engineering — "
+            "check add_deg_delta for groupby() column loss"
+        )
+
+    def test_engineer_features_preserves_stint_number_column(self):
+        from src.pipeline.cleaner import clean_laps
+        from src.pipeline.features import engineer_features
+        laps = make_multidriver_laps()
+        cleaned = clean_laps(laps)
+        result = engineer_features(cleaned, total_laps=30)
+        assert "StintNumber" in result.columns
+
+    def test_engineer_features_driver_values_intact_multidriver(self):
+        """The regression only shows up with >1 driver — a 1-driver
+        fixture can't distinguish 'column present' from 'column dropped
+        then silently re-inferred'."""
+        from src.pipeline.cleaner import clean_laps
+        from src.pipeline.features import engineer_features
+        laps = make_multidriver_laps()
+        cleaned = clean_laps(laps)
+        result = engineer_features(cleaned, total_laps=30)
+        assert set(result["Driver"].unique()) == {"VER", "HAM", "LEC"}
+
+    def test_full_pipeline_schema_has_all_required_columns(self):
+        """End-to-end: every column the tyre model and dashboard depend on
+        must survive clean_laps() -> engineer_features()."""
+        from src.pipeline.cleaner import clean_laps
+        from src.pipeline.features import engineer_features
+        laps = make_multidriver_laps()
+        cleaned = clean_laps(laps)
+        result = engineer_features(cleaned, total_laps=30)
+
+        required = {
+            "Driver", "Compound", "TyreAge", "StintNumber",
+            "FuelCorrectedLapTime", "DegDelta", "LapTimeSec", "LapNumber",
+        }
+        missing = required - set(result.columns)
+        assert not missing, f"Pipeline dropped required columns: {missing}"
+
+    def test_deg_delta_first_lap_of_stint_is_zero(self):
+        """Sanity check the transform-based DegDelta matches the original
+        apply-based semantics: first lap of each stint has DegDelta == 0."""
+        from src.pipeline.cleaner import clean_laps
+        from src.pipeline.features import engineer_features
+        laps = make_multidriver_laps()
+        cleaned = clean_laps(laps)
+        result = engineer_features(cleaned, total_laps=30)
+
+        first_laps = result.sort_values("LapNumber").groupby(
+            ["Driver", "StintNumber"]
+        ).first()
+        assert np.allclose(first_laps["DegDelta"], 0.0, atol=1e-9)
+
+    def test_outlier_removal_keeps_small_groups_fully(self):
+        """Groups with <3 laps should be kept entirely (can't judge outliers
+        on so little data) — verifies the vectorized transform matches the
+        original per-group apply() logic exactly."""
+        from src.pipeline.cleaner import remove_lap_time_outliers
+        laps = pd.DataFrame({
+            "Compound": ["SOFT", "SOFT"] + ["HARD"] * 11,
+            "LapTimeSec": [90.0, 90.2] + [91.0, 91.1, 91.2, 90.9, 91.05,
+                                          91.15, 90.95, 91.1, 91.0, 91.05,
+                                          110.0],  # HARD has one clear outlier
+        })
+        result = remove_lap_time_outliers(laps, z_threshold=2.5)
+        # SOFT group (n=2 < 3) must survive fully
+        assert (result["Compound"] == "SOFT").sum() == 2
+        # HARD group's 110.0 outlier should be removed (mean~91.4, well
+        # away from the tight cluster of normal laps around 91.0)
+        assert 110.0 not in result["LapTimeSec"].values

@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt
 from src.pipeline.loader import (
     load_session, get_laps, get_pit_stops,
     get_race_schedule, get_session_drivers, get_race_laps,
+    get_track_temp, get_final_classification,
 )
 from src.pipeline.cleaner import clean_laps
 from src.pipeline.features import engineer_features
@@ -40,9 +41,10 @@ from src.visualisation.tyre_plots import (
 from src.visualisation.strategy_plots import (
     plot_strategy_comparison, plot_lap_trace, plot_undercut_window,
 )
-from src.simulator.rival import RivalState, scan_undercut_window
+from src.simulator.rival import RivalState, scan_undercut_window, scan_overcut_window
 from src.visualisation.rival_plots import (
     plot_undercut_ev_timeline, plot_gap_trace, plot_head_to_head_mc,
+    plot_undercut_vs_overcut,
 )
 from src.utils.config import COMPOUNDS, RACE_LAPS, N_SIMULATIONS
 
@@ -208,17 +210,9 @@ html, body, .stApp {{
 [data-testid="stSidebar"] {{
   background:var(--off) !important;
   border-right:1px solid var(--border) !important;
-  /* Allow Streamlit to manage collapsed/expanded widths */
-  min-width:0 !important;
-  max-width:none !important;
+  min-width:276px !important; max-width:276px !important;
 }}
 [data-testid="stSidebar"] > div:first-child {{ padding:0 !important; }}
-
-/* Ensure sidebar content still remains measurable/clickable when collapsed */
-[data-testid="stSidebar"] * {{
-  min-width:0 !important;
-}}
-
 
 .sb-header {{
   padding:1.4rem 1.25rem 1rem;
@@ -530,6 +524,72 @@ hr {{ border-color:var(--border) !important; margin:1.5rem 0 !important; }}
   letter-spacing:.12em; padding:1px 6px; border-radius:1px;
   text-transform:uppercase;
 }}
+
+/* ═══════════ WEATHER CHIP (F1-app inspired) ═══════════ */
+.weather-strip {{
+  display:flex; align-items:stretch; gap:0;
+  border:1px solid var(--border); background:var(--off);
+  margin:1.5rem 0; animation:fade-up .5s ease-out;
+}}
+.wchip {{
+  padding:.8rem 1.4rem; border-right:1px solid var(--border);
+  display:flex; align-items:center; gap:10px; flex:1;
+}}
+.wchip:last-child {{ border-right:none; }}
+.wchip-icon {{ font-size:1.3rem; opacity:.85; }}
+.wchip-lbl {{ font-family:var(--font-b); font-size:.52rem; font-weight:700; letter-spacing:.2em; color:var(--dim); text-transform:uppercase; }}
+.wchip-val {{ font-family:var(--font-d); font-size:1.05rem; font-weight:700; color:var(--white); line-height:1.1; }}
+.wchip-val.hot   {{ color:var(--red); }}
+.wchip-val.cold  {{ color:#4c9be8; }}
+.wchip-val.rain  {{ color:var(--teal); }}
+
+/* ═══════════ TIMING TOWER (F1-app inspired) ═══════════ */
+.tt-wrap {{
+  border:1px solid var(--border); background:var(--off); margin:1rem 0;
+}}
+.tt-head {{
+  padding:.6rem 1.2rem; border-bottom:1px solid var(--border);
+  display:flex; align-items:center; justify-content:space-between;
+  font-family:var(--font-b); font-size:.56rem; font-weight:700;
+  letter-spacing:.25em; color:var(--dim); text-transform:uppercase;
+}}
+.tt-row {{
+  display:grid; grid-template-columns:32px 28px 1fr auto auto;
+  align-items:center; gap:12px; padding:.55rem 1.2rem;
+  border-bottom:1px solid #111; transition:background .15s;
+}}
+.tt-row:last-child {{ border-bottom:none; }}
+.tt-row:hover {{ background:var(--panel); }}
+.tt-row.self {{ background:rgba(232,0,45,.05); border-left:2px solid var(--red); }}
+.tt-pos {{ font-family:var(--font-d); font-size:.85rem; font-weight:700; color:var(--dim); }}
+.tt-pos.p1 {{ color:var(--yellow); }}
+.tt-pos.p2 {{ color:#c0c0c0; }}
+.tt-pos.p3 {{ color:#cd7f32; }}
+.tt-team-bar {{ width:3px; height:20px; border-radius:1px; }}
+.tt-driver {{ font-family:var(--font-d); font-size:.82rem; font-weight:700; color:var(--white); letter-spacing:.04em; }}
+.tt-team {{ font-family:var(--font-b); font-size:.56rem; color:var(--dim); letter-spacing:.06em; margin-top:1px; }}
+.tt-time {{ font-family:var(--font-b); font-size:.72rem; font-weight:600; color:var(--dim); text-align:right; }}
+.tt-status {{ font-family:var(--font-b); font-size:.58rem; font-weight:700; letter-spacing:.1em; text-align:right; text-transform:uppercase; }}
+
+/* ═══════════ COMPOUND ROUNDEL (F1-app tyre icon) ═══════════ */
+.roundel {{
+  display:inline-flex; align-items:center; justify-content:center;
+  width:22px; height:22px; border-radius:50%; border:2px solid;
+  font-family:var(--font-d); font-size:.62rem; font-weight:700;
+  flex-shrink:0;
+}}
+.roundel.soft   {{ border-color:var(--red);    color:var(--red);    background:rgba(232,0,45,.08); }}
+.roundel.medium {{ border-color:var(--yellow); color:var(--yellow); background:rgba(255,215,0,.08); }}
+.roundel.hard   {{ border-color:#f0ede8;       color:#f0ede8;       background:rgba(240,237,232,.06); }}
+
+/* ═══════════ COMPARISON PILL (undercut vs overcut) ═══════════ */
+.strat-pill {{
+  display:inline-flex; align-items:center; gap:6px;
+  padding:3px 10px; border-radius:2px; font-family:var(--font-b);
+  font-size:.62rem; font-weight:700; letter-spacing:.1em; text-transform:uppercase;
+}}
+.strat-pill.win  {{ background:rgba(57,181,74,.12); color:var(--green); border:1px solid rgba(57,181,74,.3); }}
+.strat-pill.lose {{ background:rgba(85,85,85,.12); color:var(--dim); border:1px solid var(--bord2); }}
 </style>
 """.format(IMG_RED=_IMG_RED, IMG_JACK=_IMG_JACK)
 
@@ -574,6 +634,12 @@ with st.sidebar:
     n_sims        = st.slider("MC ITERATIONS", 100, 2000, N_SIMULATIONS, step=100)
     stop_strategy = st.radio("STRATEGY TYPE", ["1-stop","2-stop","Both"])
     noise         = st.slider("LAP TIME NOISE (s)", 0.0, 1.0, 0.3, step=0.05)
+
+    st.markdown('<div class="sb-section">Track Conditions</div>', unsafe_allow_html=True)
+    use_live_temp = st.checkbox("Use live session temperature", value=True)
+    manual_temp   = None
+    if not use_live_temp:
+        manual_temp = st.slider("Track temp override (°C)", 15, 55, 35)
 
     st.markdown("<br>", unsafe_allow_html=True)
     run_btn = st.button("▶  RUN SIMULATION", use_container_width=True, type="primary")
@@ -749,6 +815,8 @@ with st.spinner("Loading FastF1 session data…"):
         pit_stops       = get_pit_stops(session)
         race_total_laps = get_race_laps(session)
         session_drivers = get_session_drivers(session)
+        weather         = get_track_temp(session)
+        classification  = get_final_classification(session, top_n=8)
     except Exception as e:
         st.error(f"Failed to load session: {e}")
         st.stop()
@@ -761,6 +829,10 @@ with st.spinner("Fitting 3-phase tyre degradation model…"):
     deg_model = TyreDegModel()
     deg_model.fit(laps, driver=driver_code)
     pit_loss = get_pit_loss(pit_stops)
+
+    # Track temperature scaling — live session data unless overridden
+    effective_temp = manual_temp if not use_live_temp else (weather["track_temp"] if weather else None)
+    deg_model.set_track_temp(effective_temp)
 
 with st.spinner(f"Running {n_sims:,} Monte Carlo simulations…"):
     strategies = []
@@ -819,6 +891,100 @@ st.markdown(f"""
   </div>
 </div>
 """, unsafe_allow_html=True)
+
+# ── Weather strip (F1-app inspired) ──────────────────────────────────────────
+if weather:
+    temp_class = "hot" if weather["track_temp"] >= 42 else ("cold" if weather["track_temp"] <= 25 else "")
+    rain_icon  = "🌧" if weather["rainfall"] else "☀"
+    rain_class = "rain" if weather["rainfall"] else ""
+    scale_note = (f"{deg_model.temp_scale:.2f}× deg scaling"
+                  if deg_model.temp_scale != 1.0 else "neutral (no scaling)")
+    st.markdown(f"""
+    <div class="weather-strip">
+      <div class="wchip">
+        <div class="wchip-icon">🌡</div>
+        <div>
+          <div class="wchip-lbl">Track Temp</div>
+          <div class="wchip-val {temp_class}">{weather['track_temp']}°C</div>
+        </div>
+      </div>
+      <div class="wchip">
+        <div class="wchip-icon">💨</div>
+        <div>
+          <div class="wchip-lbl">Air Temp</div>
+          <div class="wchip-val">{weather['air_temp']}°C</div>
+        </div>
+      </div>
+      <div class="wchip">
+        <div class="wchip-icon">{rain_icon}</div>
+        <div>
+          <div class="wchip-lbl">Conditions</div>
+          <div class="wchip-val {rain_class}">{'Wet' if weather['rainfall'] else 'Dry'}</div>
+        </div>
+      </div>
+      <div class="wchip">
+        <div class="wchip-icon">◈</div>
+        <div>
+          <div class="wchip-lbl">Deg Model Adjustment</div>
+          <div class="wchip-val" style="font-size:.82rem">{scale_note}</div>
+        </div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+else:
+    st.markdown("""
+    <div class="weather-strip">
+      <div class="wchip">
+        <div class="wchip-icon">—</div>
+        <div>
+          <div class="wchip-lbl">Weather Data</div>
+          <div class="wchip-val" style="font-size:.8rem;color:#444">Unavailable for this session</div>
+        </div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ── Timing tower (F1-app inspired) ───────────────────────────────────────────
+if not classification.empty:
+    tt_rows_html = ""
+    for _, row in classification.iterrows():
+        pos      = row.get("Position", "—")
+        pos_cls  = f"p{int(pos)}" if str(pos).replace(".0","").isdigit() and int(float(pos)) <= 3 else ""
+        drv_code = str(row.get("Driver", "—"))
+        team     = str(row.get("TeamName", ""))
+        time_val = str(row.get("Time", "—"))
+        status   = str(row.get("Status", ""))
+        is_self  = drv_code == driver_code
+        drv_meta = DRIVERS.get(drv_code, {"color": "#666"})
+        team_color = drv_meta["color"]
+
+        # Clean up time display
+        if "0 days" in time_val:
+            time_val = time_val.split("0 days ")[-1]
+        status_color = "#39b54a" if status.lower() == "finished" else "#e8002d"
+
+        tt_rows_html += f"""
+        <div class="tt-row {'self' if is_self else ''}">
+          <div class="tt-pos {pos_cls}">{int(float(pos)) if str(pos).replace('.0','').isdigit() else pos}</div>
+          <div class="tt-team-bar" style="background:{team_color}"></div>
+          <div>
+            <div class="tt-driver">{drv_code}</div>
+            <div class="tt-team">{team}</div>
+          </div>
+          <div class="tt-time">{time_val[:12]}</div>
+          <div class="tt-status" style="color:{status_color}">{status}</div>
+        </div>
+        """
+
+    st.markdown(f"""
+    <div class="tt-wrap">
+      <div class="tt-head">
+        <span>Timing Tower — Actual Result</span>
+        <span>{year} {race} GP</span>
+      </div>
+      {tt_rows_html}
+    </div>
+    """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════
 # TABS
@@ -917,7 +1083,12 @@ with tab2:
 with tab3:
     col_a, col_b = st.columns([2.2, 1])
     with col_a:
-        st.markdown('<div class="sh"><span>Degradation Curves</span> — 3-Phase Piecewise Model</div>', unsafe_allow_html=True)
+        temp_note = (
+            f'<span style="color:#e8002d">{deg_model.track_temp}°C · {deg_model.temp_scale:.2f}× scaling applied</span>'
+            if deg_model.temp_scale != 1.0
+            else '<span style="color:#333">neutral temp — no scaling</span>'
+        )
+        st.markdown(f'<div class="sh"><span>Degradation Curves</span> — 3-Phase Piecewise Model &nbsp;·&nbsp; {temp_note}</div>', unsafe_allow_html=True)
         fig_deg = plot_degradation_curves(deg_model, save=False)
         st.pyplot(fig_deg, use_container_width=True)
 
@@ -1156,33 +1327,92 @@ with tab5:
                 n_simulations=200, noise_std=noise,
             )
 
+        with st.spinner("Scanning overcut window…"):
+            overcut_df = scan_overcut_window(
+                from_lap=scan_from_lap, to_lap=scan_to_lap,
+                our_compound=our_compound_now,
+                our_tyre_age_at_from_lap=our_tyre_age_now,
+                new_compound=new_compound,
+                rival=rival,
+                deg_model=deg_model, pit_loss=pit_loss,
+                n_simulations=200, noise_std=noise,
+            )
+
         rec = scan_df[scan_df["recommend"]]
-        if not rec.empty:
-            best_lap = rec.iloc[rec["mean_ev"].argmax()]
+        rec_over = overcut_df[overcut_df["recommend"]]
+
+        best_u_ev = rec["mean_ev"].max() if not rec.empty else -999
+        best_o_ev = rec_over["mean_ev"].max() if not rec_over.empty else -999
+
+        if best_u_ev <= -999 and best_o_ev <= -999:
+            st.warning("Neither undercut nor overcut shows a clear advantage — consider holding position.")
+        else:
+            winner       = "UNDERCUT" if best_u_ev >= best_o_ev else "OVERCUT"
+            winner_color = "#e8002d" if winner == "UNDERCUT" else "#00d2be"
+            winner_ev    = max(best_u_ev, best_o_ev)
             st.markdown(f"""
-            <div class="rec-panel">
-              <div class="rec-label">AI Undercut Recommendation</div>
+            <div class="rec-panel" style="border-left-color:{winner_color}">
+              <div class="rec-label">AI Recommendation</div>
               <div class="rec-text">
-                Window: Laps <span class="hl-red">{rec['lap'].min()}–{rec['lap'].max()}</span>
-                &nbsp;·&nbsp; Optimal lap: <span class="hl-gold">L{int(best_lap['lap'])}</span>
-                &nbsp;·&nbsp; EV: <span class="hl-teal">+{best_lap['mean_ev']:.2f}s</span>
-                &nbsp;·&nbsp; Win rate: <span class="hl-red">{best_lap['win_rate']:.0%}</span>
-                &nbsp;·&nbsp; P10–P90: [{best_lap['p10_ev']:.2f}s, {best_lap['p90_ev']:.2f}s]
+                <span class="strat-pill win" style="background:{winner_color}22;color:{winner_color};border-color:{winner_color}55">
+                  {winner}
+                </span>
+                &nbsp;is the stronger play &nbsp;·&nbsp;
+                Best EV: <span class="hl-teal">+{winner_ev:.2f}s</span>
               </div>
             </div>
             """, unsafe_allow_html=True)
-        else:
-            st.warning("No positive-EV undercut window found — consider overcut or hold position.")
 
-        st.markdown('<div class="sh"><span>EV Timeline</span> — Undercut Expected Value by Lap</div>', unsafe_allow_html=True)
+        # ── Undercut vs Overcut comparison ────────────────────────────────
+        st.markdown('<div class="sh"><span>Undercut vs Overcut</span> — Side-by-Side EV Comparison</div>', unsafe_allow_html=True)
+        fig_compare = plot_undercut_vs_overcut(scan_df, overcut_df, rival_driver=rival_code,
+                                                our_driver=driver_code, save=False)
+        st.pyplot(fig_compare, use_container_width=True)
+
+        uc1, uc2 = st.columns(2)
+        with uc1:
+            st.markdown(f"""
+            <div class="gpanel" style="border-left:3px solid #e8002d">
+              <div class="gpanel-lbl">Undercut</div>
+              <div class="gpanel-val" style="color:#e8002d">
+                {'+' + format(best_u_ev, '.2f') + 's EV' if best_u_ev > -999 else 'No advantage'}
+              </div>
+              <div class="gpanel-sub">{len(rec)} favourable laps in window</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with uc2:
+            st.markdown(f"""
+            <div class="gpanel" style="border-left:3px solid #00d2be">
+              <div class="gpanel-lbl">Overcut</div>
+              <div class="gpanel-val" style="color:#00d2be">
+                {'+' + format(best_o_ev, '.2f') + 's EV' if best_o_ev > -999 else 'No advantage'}
+              </div>
+              <div class="gpanel-sub">{len(rec_over)} favourable laps in window</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown('<div class="sh"><span>Undercut EV Timeline</span></div>', unsafe_allow_html=True)
         fig_ev = plot_undercut_ev_timeline(scan_df, rival_driver=rival_code,
-                                            our_driver=driver_code, save=False)
+                                            our_driver=driver_code, mode_label="UNDERCUT", save=False)
         st.pyplot(fig_ev, use_container_width=True)
+
+        st.markdown('<div class="sh"><span>Overcut EV Timeline</span></div>', unsafe_allow_html=True)
+        fig_ev_over = plot_undercut_ev_timeline(overcut_df, rival_driver=rival_code,
+                                                  our_driver=driver_code, mode_label="OVERCUT", save=False)
+        st.pyplot(fig_ev_over, use_container_width=True)
 
         # Raw scan data
         with st.expander("📋 Raw Scan Data"):
+            st.markdown("**Undercut scan**")
             st.dataframe(
                 scan_df.style.format({
+                    "mean_ev":"{:.3f}","p10_ev":"{:.3f}","p90_ev":"{:.3f}","win_rate":"{:.1%}"
+                }),
+                use_container_width=True, hide_index=True,
+            )
+            st.markdown("**Overcut scan**")
+            st.dataframe(
+                overcut_df.style.format({
                     "mean_ev":"{:.3f}","p10_ev":"{:.3f}","p90_ev":"{:.3f}","win_rate":"{:.1%}"
                 }),
                 use_container_width=True, hide_index=True,

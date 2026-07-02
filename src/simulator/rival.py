@@ -52,10 +52,12 @@ log = get_logger(__name__)
 # Real value: ~1.5–3s slower than a representative flying lap
 OUT_LAP_PENALTY = 2.0   # seconds added to predicted lap time on out-lap
 
-# Pit lane delta: time lost driving through pit lane vs racing line
-# This is separate from pit_loss (stationary time) — it's the pit lane travel cost
-# Approximation: ~18–20s pit lane traversal vs ~0s on track for that "lap"
-PIT_LANE_DELTA = 19.0   # seconds (track-specific; Bahrain ~18s, Monaco ~23s)
+# NOTE: pit_loss (passed into every function below) already represents the
+# FULL cost of a pit stop versus staying out — pit lane travel time AND
+# stationary time combined (see pit_loss.py docstring: "Pit loss = time lost
+# versus staying out: approx (pit lane travel time + stationary time) -
+# (normal lap delta)"). Do NOT add a separate pit lane delta on top of
+# pit_loss here — that would double-count ~19s of penalty per pit stop.
 
 
 @dataclass
@@ -158,22 +160,14 @@ def evaluate_undercut(
     -------
     UndercutResult with gap projections and EV.
     """
-    # Our current lap time if we stay out (reference)
-    our_current_pace = float(deg_model.predict(our_compound, our_tyre_age))
-    if noise_std > 0:
-        our_current_pace += np.random.normal(0, noise_std)
-
-    # Rival's pace on their ageing tyres this lap
-    rival_pace_this_lap = float(deg_model.predict(rival.compound, rival.tyre_age))
-    if noise_std > 0:
-        rival_pace_this_lap += np.random.normal(0, noise_std)
-
     # --- Step 1: We pit, rival stays out ---
-    # We lose: pit_loss (stationary) + pit lane delta vs racing line
-    # Rival gains: one lap of normal running at their tyre age
-    # Net gap change when we emerge from pits:
-    gap_change_on_pit = -(pit_loss + PIT_LANE_DELTA) + rival_pace_this_lap
-    gap_after_pit = rival.gap_to_us + gap_change_on_pit
+    # We lose exactly pit_loss seconds relative to rival (pit_loss already
+    # represents the full delta of stopping vs. staying out for one lap —
+    # see pit_loss.py). Steps 2-3 below separately account for the ongoing
+    # pace differential via lap-time deltas, so step 1 must NOT also mix in
+    # an absolute lap time here (that was double-counting pace on top of
+    # the stop cost, since pit_loss is already a delta, not a raw lap time).
+    gap_after_pit = rival.gap_to_us + pit_loss
     # gap_after_pit: positive = rival still ahead after our pit
 
     # --- Step 2: Our out-lap vs rival's next lap ---
@@ -230,15 +224,10 @@ def evaluate_overcut(
 
     Returns a dict with gap projections and sustainability assessment.
     """
-    # Our lap time on old tyres
-    our_old_lap = float(deg_model.predict(our_compound, our_tyre_age))
-    if noise_std > 0:
-        our_old_lap += np.random.normal(0, noise_std)
-
-    # Rival loses time pitting
-    gap_change = pit_loss + PIT_LANE_DELTA - our_old_lap
-    # (rival loses the pit time; we run a lap they don't in terms of track progress)
-    gap_after_rival_pit = rival.gap_to_us - gap_change
+    # Rival pits this lap → loses exactly pit_loss seconds relative to us
+    # (same reasoning as evaluate_undercut step 1 — pit_loss is already a
+    # delta, not a raw lap time, so it must not be combined with one here).
+    gap_after_rival_pit = rival.gap_to_us - pit_loss
     # We want gap_after_rival_pit < 0 (we're ahead after they emerge)
 
     # Rival's out-lap on fresh tyres
@@ -264,11 +253,17 @@ def evaluate_overcut(
 
     overcut_works = gap_after_exchange < 0
 
+    # EV: how much better off are we (in gap terms) vs pitting immediately.
+    # Mirrors the undercut EV formula for direct comparability: positive EV
+    # means staying out gained us position/time relative to the starting gap.
+    ev = rival.gap_to_us - gap_after_exchange
+
     return {
         "lap": lap,
         "gap_after_rival_pit": round(gap_after_rival_pit, 3),
         "gap_after_exchange": round(gap_after_exchange, 3),
         "overcut_works": overcut_works,
+        "ev_seconds": round(ev, 3),
         "pace_deficit_per_lap": round(pace_deficit_per_lap, 3),
         "laps_sustainable": round(min(laps_sustainable, 50.0), 1),
     }
@@ -365,6 +360,108 @@ def scan_undercut_window(
     log.info(
         f"Undercut scan {from_lap}–{to_lap} vs {rival.driver}: "
         f"{df['recommend'].sum()} recommended laps"
+    )
+    return df
+
+
+def scan_overcut_window(
+    from_lap: int,
+    to_lap: int,
+    our_compound: str,
+    our_tyre_age_at_from_lap: int,
+    new_compound: str,
+    rival: RivalState,
+    deg_model: "TyreDegModel",
+    pit_loss: float,
+    n_simulations: int = 200,
+    noise_std: float = 0.3,
+) -> pd.DataFrame:
+    """
+    Monte Carlo scan of overcut EV across a range of assumed rival pit laps.
+
+    Mirrors scan_undercut_window(), but evaluates the opposite strategy:
+    we stay out while the rival pits on each candidate lap. Our tyre age
+    increases with each lap we stay out; the rival's resets to 1 (fresh)
+    the lap after they pit.
+
+    For each candidate rival pit lap in [from_lap, to_lap], runs
+    n_simulations of the overcut evaluation with lap time noise, then
+    reports the same schema as scan_undercut_window() so the two can be
+    directly compared side by side in the UI:
+      - mean_ev, p10_ev, p50_ev, p90_ev  (seconds gained vs pitting now)
+      - win_rate  (fraction of sims where overcut_works=True)
+      - recommend (win_rate >= 0.5 AND mean_ev > 0)
+
+    Parameters
+    ----------
+    from_lap                  : Earliest lap we assume the rival might pit
+    to_lap                    : Latest lap we assume the rival might pit
+    our_compound              : Our current tyre compound (the one we hold)
+    our_tyre_age_at_from_lap  : Our tyre age at from_lap (increments each lap)
+    new_compound              : Compound the RIVAL is assumed to fit
+                                 (used to model their out-lap pace)
+    rival                     : RivalState (gap, compound, tyre_age at from_lap)
+    deg_model                 : Fitted TyreDegModel
+    pit_loss                  : Pit stop time loss (seconds) — rival's cost
+    n_simulations             : MC iterations per lap
+    noise_std                 : Lap time noise std dev
+
+    Returns
+    -------
+    DataFrame with one row per candidate rival pit lap.
+    """
+    rows = []
+    rival_tyre_age = rival.tyre_age
+
+    for offset, lap in enumerate(range(from_lap, to_lap + 1)):
+        our_age   = our_tyre_age_at_from_lap + offset
+        rival_age = rival_tyre_age + offset
+
+        rival_at_lap = RivalState(
+            driver=rival.driver,
+            compound=rival.compound,
+            tyre_age=rival_age,
+            gap_to_us=rival.gap_to_us,  # simplified: hold gap constant until this lap
+            has_pitted=rival.has_pitted,
+        )
+
+        ev_samples = []
+        works_count = 0
+
+        for _ in range(n_simulations):
+            result = evaluate_overcut(
+                lap=lap,
+                our_compound=our_compound,
+                our_tyre_age=our_age,
+                new_compound=new_compound,
+                rival=rival_at_lap,
+                deg_model=deg_model,
+                pit_loss=pit_loss,
+                noise_std=noise_std,
+            )
+            ev_samples.append(result["ev_seconds"])
+            if result["overcut_works"]:
+                works_count += 1
+
+        ev_arr = np.array(ev_samples)
+        win_rate = works_count / n_simulations
+
+        rows.append({
+            "lap":        lap,
+            "our_age":    our_age,
+            "rival_age":  rival_age,
+            "mean_ev":    round(float(np.mean(ev_arr)), 3),
+            "p10_ev":     round(float(np.percentile(ev_arr, 10)), 3),
+            "p50_ev":     round(float(np.percentile(ev_arr, 50)), 3),
+            "p90_ev":     round(float(np.percentile(ev_arr, 90)), 3),
+            "win_rate":   round(win_rate, 3),
+            "recommend":  win_rate >= 0.5 and float(np.mean(ev_arr)) > 0,
+        })
+
+    df = pd.DataFrame(rows)
+    log.info(
+        f"Overcut scan {from_lap}–{to_lap} vs {rival.driver}: "
+        f"{df['recommend'].sum()} favourable laps to stay out"
     )
     return df
 

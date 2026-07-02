@@ -119,6 +119,56 @@ def get_race_laps(session: fastf1.core.Session) -> int:
     return RACE_LAPS
 
 
+def get_track_temp(session: fastf1.core.Session) -> dict | None:
+    """
+    Extract mean track/ambient temperature from session weather data.
+
+    Returns
+    -------
+    {"track_temp": float, "air_temp": float, "rainfall": bool} or None
+    if weather data is unavailable.
+    """
+    try:
+        weather = session.weather_data
+        if weather is None or weather.empty:
+            return None
+        track_temp = float(weather["TrackTemp"].mean())
+        air_temp   = float(weather["AirTemp"].mean())
+        rainfall   = bool(weather["Rainfall"].any()) if "Rainfall" in weather.columns else False
+        return {"track_temp": round(track_temp, 1),
+                "air_temp": round(air_temp, 1),
+                "rainfall": rainfall}
+    except Exception as e:
+        log.warning(f"Could not extract weather data: {e}")
+        return None
+
+
+def get_final_classification(session: fastf1.core.Session, top_n: int = 5) -> pd.DataFrame:
+    """
+    Return the top-N finishing classification for the session.
+
+    Used to power the "timing tower" widget — grounds the tool's output
+    in what actually happened in the real race.
+
+    Returns
+    -------
+    DataFrame with columns: Position, Driver, TeamName, Time, Status
+    Empty DataFrame if results are unavailable.
+    """
+    try:
+        results = session.results
+        if results is None or results.empty:
+            return pd.DataFrame()
+        cols = [c for c in ["Position", "Abbreviation", "TeamName", "Time", "Status", "GridPosition"]
+                if c in results.columns]
+        out = results[cols].head(top_n).copy()
+        out = out.rename(columns={"Abbreviation": "Driver"})
+        return out.reset_index(drop=True)
+    except Exception as e:
+        log.warning(f"Could not extract classification: {e}")
+        return pd.DataFrame()
+
+
 def get_pit_stops(session: fastf1.core.Session) -> pd.DataFrame:
     """
     Extract pit stop events with timing from the laps DataFrame.

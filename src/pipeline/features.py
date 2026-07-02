@@ -68,20 +68,19 @@ def add_deg_delta(laps: pd.DataFrame) -> pd.DataFrame:
     """
     DegDelta: lap time delta from the first clean lap of each stint.
     Captures the cumulative degradation effect.
+
+    Implemented with groupby().transform("first") rather than
+    groupby().apply() — apply() with include_groups=False silently drops
+    the grouping columns from the result, which previously caused BOTH
+    "Driver" and "StintNumber" to disappear from the engineered laps
+    DataFrame (a serious regression: every downstream driver filter,
+    including the tyre model's driver-weighted fit, would break).
     """
     laps = laps.copy()
-
-    def _stint_delta(group):
-        baseline = group["FuelCorrectedLapTime"].iloc[0] if len(group) > 0 else np.nan
-        group["DegDelta"] = group["FuelCorrectedLapTime"] - baseline
-        return group
-
     col = "FuelCorrectedLapTime" if "FuelCorrectedLapTime" in laps.columns else "LapTimeSec"
-    laps = (
-        laps.groupby(["Driver", "StintNumber"], group_keys=False)
-        .apply(_stint_delta, include_groups=False)
-        .reset_index(drop=True)
-    )
+
+    stint_baseline = laps.groupby(["Driver", "StintNumber"])[col].transform("first")
+    laps["DegDelta"] = laps[col] - stint_baseline
     return laps
 
 

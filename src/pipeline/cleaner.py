@@ -54,22 +54,30 @@ def remove_lap_time_outliers(laps: pd.DataFrame,
     """
     Remove lap time outliers using Z-score per compound group.
     This handles e.g. a driver going off-track mid-stint.
+
+    Implemented with groupby().transform() rather than groupby().apply()
+    — this is both faster (vectorized, no per-group Python calls) and
+    avoids a pandas footgun: apply() with include_groups=False silently
+    drops the grouping column from the result, which previously caused
+    "Compound" to disappear from the cleaned laps DataFrame entirely.
     """
     before = len(laps)
     if col not in laps.columns:
         log.warning(f"Column {col} not found — skipping outlier removal")
         return laps
 
-    def _filter_group(group):
-        if len(group) < 3:
-            return group
-        mean, std = group[col].mean(), group[col].std()
-        if std == 0:
-            return group
-        z = (group[col] - mean).abs() / std
-        return group[z < z_threshold]
+    group_size = laps.groupby("Compound")[col].transform("size")
+    group_mean = laps.groupby("Compound")[col].transform("mean")
+    group_std  = laps.groupby("Compound")[col].transform("std")
 
-    laps = laps.groupby("Compound", group_keys=False).apply(_filter_group, include_groups=False).reset_index(drop=True)
+    z_score = (laps[col] - group_mean).abs() / group_std
+
+    # Keep a lap if: its compound group is too small to judge (<3 laps),
+    # the group has zero variance (std=0, nothing to flag), or its
+    # z-score is within threshold.
+    keep = (group_size < 3) | (group_std == 0) | (z_score < z_threshold)
+
+    laps = laps[keep].copy()
     log.info(f"Outlier laps removed: {before - len(laps)} ({len(laps)} remain)")
     return laps.reset_index(drop=True)
 

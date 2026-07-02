@@ -59,6 +59,7 @@ def plot_undercut_ev_timeline(
     scan_df: pd.DataFrame,
     rival_driver: str,
     our_driver: str = "Our car",
+    mode_label: str = "UNDERCUT",
     save: bool = True,
     filename: str = "undercut_ev_timeline.png",
 ) -> plt.Figure:
@@ -68,6 +69,7 @@ def plot_undercut_ev_timeline(
       Bottom: Win rate bars + 50% threshold line
 
     Full grid, compound-aware colours, clean annotations.
+    mode_label lets this be reused for overcut scans (schema-identical).
     """
     fig, (ax_ev, ax_wr) = plt.subplots(
         2, 1, figsize=(13, 7.5),
@@ -124,7 +126,7 @@ def plot_undercut_ev_timeline(
         )
 
     ax_ev.set_title(
-        f"UNDERCUT ANALYSIS — {our_driver} vs {rival_driver}",
+        f"{mode_label} ANALYSIS — {our_driver} vs {rival_driver}",
         fontsize=10, fontweight="bold", fontfamily="monospace",
         color="#f5f5f5", pad=10,
     )
@@ -256,6 +258,67 @@ def plot_gap_trace(
 
 
 # ── Head-to-head win rate ─────────────────────────────────────────────────────
+
+def plot_undercut_vs_overcut(
+    undercut_df: pd.DataFrame,
+    overcut_df: pd.DataFrame,
+    rival_driver: str,
+    our_driver: str = "Our car",
+    save: bool = True,
+    filename: str = "undercut_vs_overcut.png",
+) -> plt.Figure:
+    """
+    Direct side-by-side comparison of undercut vs overcut mean EV across
+    the same lap window. Positive EV = favourable for that strategy.
+
+    Single panel, two lines, shaded crossover zones showing which strategy
+    is better on which lap.
+    """
+    fig, ax = plt.subplots(figsize=(13, 5.5))
+    _theme(ax, fig,
+           title=f"UNDERCUT vs OVERCUT — {our_driver} vs {rival_driver}",
+           xlabel="Candidate Pit Lap", ylabel="Mean EV (s)")
+
+    laps = undercut_df["lap"].values
+    ev_u = undercut_df["mean_ev"].values
+    ev_o = overcut_df.set_index("lap").reindex(laps)["mean_ev"].values
+
+    # Shade the region where each strategy wins
+    ax.fill_between(laps, ev_u, ev_o, where=(ev_u >= ev_o),
+                    color=RED, alpha=0.10, interpolate=True, label="Undercut favoured")
+    ax.fill_between(laps, ev_u, ev_o, where=(ev_u < ev_o),
+                    color=TEAL, alpha=0.10, interpolate=True, label="Overcut favoured")
+
+    ax.plot(laps, ev_u, color=RED,  linewidth=2.2, label="Undercut EV", zorder=4)
+    ax.plot(laps, ev_o, color=TEAL, linewidth=2.2, label="Overcut EV",  zorder=4)
+    ax.axhline(0, color=BORDER, linewidth=1, zorder=2)
+
+    # Best lap for each
+    best_u_idx = np.argmax(ev_u)
+    best_o_idx = np.argmax(ev_o)
+    ax.scatter(laps[best_u_idx], ev_u[best_u_idx], s=70, color=RED,
+              marker="o", zorder=5, edgecolors="black", linewidths=0.6)
+    ax.scatter(laps[best_o_idx], ev_o[best_o_idx], s=70, color=TEAL,
+              marker="o", zorder=5, edgecolors="black", linewidths=0.6)
+    ax.annotate(f"Best undercut\nL{laps[best_u_idx]} · +{ev_u[best_u_idx]:.2f}s",
+               xy=(laps[best_u_idx], ev_u[best_u_idx]),
+               xytext=(laps[best_u_idx] + 1, ev_u[best_u_idx] + 0.3),
+               fontsize=7, color=RED, fontfamily="monospace")
+    ax.annotate(f"Best overcut\nL{laps[best_o_idx]} · +{ev_o[best_o_idx]:.2f}s",
+               xy=(laps[best_o_idx], ev_o[best_o_idx]),
+               xytext=(laps[best_o_idx] + 1, ev_o[best_o_idx] - 0.5),
+               fontsize=7, color=TEAL, fontfamily="monospace")
+
+    ax.legend(facecolor=PANEL2, edgecolor=BORDER, labelcolor=TEXT,
+              fontsize=7.5, framealpha=1, loc="upper right")
+
+    fig.tight_layout(pad=1.4)
+    if save:
+        out = OUTPUTS_DIR / filename
+        fig.savefig(out, dpi=150, bbox_inches="tight")
+        log.info(f"Saved: {out}")
+    return fig
+
 
 def plot_head_to_head_mc(
     our_win_rates: dict[str, float],

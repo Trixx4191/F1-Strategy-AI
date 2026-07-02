@@ -316,3 +316,82 @@ class TestDriverWeighting:
             f"VER-weighted baseline {ver_baseline:.3f} should be "
             f"≤ fleet baseline {fleet_baseline:.3f} + tolerance"
         )
+
+
+# ── Track temperature scaling ──────────────────────────────────────────────────
+
+class TestTrackTempScaling:
+
+    def test_default_scale_is_neutral(self, fitted_model):
+        assert fitted_model.temp_scale == 1.0
+        assert fitted_model.track_temp is None
+
+    def test_set_track_temp_at_reference_is_neutral(self):
+        data = make_tyre_data(n_per_compound=25)
+        model = TyreDegModel()
+        model.fit(data)
+        model.set_track_temp(35.0, reference_temp=35.0)
+        assert abs(model.temp_scale - 1.0) < 1e-6
+
+    def test_hotter_track_increases_scale(self):
+        data = make_tyre_data(n_per_compound=25)
+        model = TyreDegModel()
+        model.fit(data)
+        model.set_track_temp(45.0, reference_temp=35.0)
+        assert model.temp_scale > 1.0
+
+    def test_colder_track_decreases_scale(self):
+        data = make_tyre_data(n_per_compound=25)
+        model = TyreDegModel()
+        model.fit(data)
+        model.set_track_temp(25.0, reference_temp=35.0)
+        assert model.temp_scale < 1.0
+
+    def test_none_disables_scaling(self):
+        data = make_tyre_data(n_per_compound=25)
+        model = TyreDegModel()
+        model.fit(data)
+        model.set_track_temp(45.0)
+        assert model.temp_scale != 1.0
+        model.set_track_temp(None)
+        assert model.temp_scale == 1.0
+        assert model.track_temp is None
+
+    def test_scale_is_clamped(self):
+        data = make_tyre_data(n_per_compound=25)
+        model = TyreDegModel()
+        model.fit(data)
+        model.set_track_temp(200.0, reference_temp=35.0)
+        assert model.temp_scale <= 1.6
+        model.set_track_temp(-100.0, reference_temp=35.0)
+        assert model.temp_scale >= 0.6
+
+    def test_baseline_unaffected_by_temp_scale(self):
+        """Lap-1 baseline pace should not change — only the deg excess scales."""
+        data = make_tyre_data(n_per_compound=25)
+        model = TyreDegModel()
+        model.fit(data)
+        baseline_before = model.predict("SOFT", 1)
+        model.set_track_temp(48.0, reference_temp=35.0)
+        baseline_after = model.predict("SOFT", 1)
+        assert abs(baseline_before - baseline_after) < 0.05
+
+    def test_hotter_track_increases_high_age_prediction(self):
+        """At high tyre age, a hotter track should predict a slower lap time
+        than at reference temp (degradation excess scaled up)."""
+        data = make_tyre_data(n_per_compound=25)
+        model = TyreDegModel()
+        model.fit(data)
+        pred_neutral = model.predict("SOFT", 20)
+        model.set_track_temp(50.0, reference_temp=35.0)
+        pred_hot = model.predict("SOFT", 20)
+        assert pred_hot >= pred_neutral
+
+    def test_predict_interface_unchanged_with_temp_scale(self, fitted_model):
+        """predict() must still return float for scalar input after scaling."""
+        data = make_tyre_data(n_per_compound=25)
+        model = TyreDegModel()
+        model.fit(data)
+        model.set_track_temp(40.0)
+        pred = model.predict("MEDIUM", 15)
+        assert isinstance(pred, float)

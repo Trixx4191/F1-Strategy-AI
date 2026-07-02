@@ -73,6 +73,17 @@ N_BOOTSTRAP = 200
 # Confidence level for cliff CI (two-tailed).
 CLIFF_CI_ALPHA = 0.05
 
+# ── Track temperature scaling ────────────────────────────────────────────────
+# Literature-informed sensitivity: tyre degradation rate increases roughly
+# 1.3%/°C of track temperature above a "reference" moderate-temp baseline.
+# This scales the DEGRADATION EXCESS (predicted - baseline pace), not the
+# baseline pace itself — hotter track doesn't make the car faster on lap 1,
+# it makes the tyre fall off faster as the stint progresses.
+TEMP_REFERENCE_C     = 35.0    # "neutral" track temp — no scaling applied
+TEMP_SENSITIVITY_PCT = 0.013   # fractional deg-rate change per °C above/below reference
+TEMP_SCALE_MIN        = 0.6    # floor — prevents degenerate negative degradation
+TEMP_SCALE_MAX        = 1.6    # ceiling — prevents runaway extrapolation
+
 
 class CompoundModel:
     """
@@ -249,6 +260,8 @@ class TyreDegModel:
         self._compound_models: dict[str, CompoundModel] = {}
         self.baselines: dict[str, float] = {}
         self.is_fitted: bool = False
+        self.track_temp: float | None = None
+        self.temp_scale: float = 1.0
 
     # ── Fitting ───────────────────────────────────────────────────────────────
 
@@ -373,6 +386,53 @@ class TyreDegModel:
             log.error(f"{compound}: piecewise fit failed — {e}")
             return None
 
+    # ── Track temperature scaling ───────────────────────────────────────────
+
+    def set_track_temp(self, track_temp: float | None,
+                        reference_temp: float = TEMP_REFERENCE_C) -> "TyreDegModel":
+        """
+        Apply a track-temperature-based scaling to the degradation excess.
+
+        Hotter track → tyres degrade faster (steeper curve above baseline).
+        Colder track → tyres degrade slower (flatter curve above baseline).
+        The baseline pace (lap 1 time) is left untouched — temperature
+        mainly affects how quickly the tyre falls off, not the car's raw pace.
+
+        Parameters
+        ----------
+        track_temp     : Mean track temperature (°C) for the session, or
+                          None to disable scaling (factor reset to 1.0).
+        reference_temp : Track temp treated as "neutral" — no scaling.
+        """
+        if track_temp is None:
+            self.track_temp = None
+            self.temp_scale = 1.0
+            log.info("No track temp data — degradation scaling disabled (1.0×)")
+            return self
+
+        delta = track_temp - reference_temp
+        scale = 1.0 + TEMP_SENSITIVITY_PCT * delta
+        scale = float(np.clip(scale, TEMP_SCALE_MIN, TEMP_SCALE_MAX))
+
+        self.track_temp = track_temp
+        self.temp_scale = scale
+        log.info(
+            f"Track temp {track_temp}°C (ref {reference_temp}°C) → "
+            f"deg scale {scale:.3f}×"
+        )
+        return self
+
+    def _apply_temp_scale(self, compound: str, ages: np.ndarray,
+                          raw_preds: np.ndarray) -> np.ndarray:
+        """Scale the degradation excess above baseline by temp_scale."""
+        if self.temp_scale == 1.0:
+            return raw_preds
+        baseline = self.baselines.get(compound)
+        if baseline is None:
+            return raw_preds
+        excess = raw_preds - baseline
+        return baseline + excess * self.temp_scale
+
     # ── Public prediction API (unchanged from polynomial model) ───────────────
 
     @property
@@ -386,6 +446,9 @@ class TyreDegModel:
     def predict(self, compound: str, tyre_age: int | np.ndarray) -> float | np.ndarray:
         """
         Predict lap time for a given compound at a given tyre age.
+
+        If a track temperature has been set via set_track_temp(), the
+        degradation excess above baseline is scaled accordingly.
 
         Parameters
         ----------
@@ -402,6 +465,7 @@ class TyreDegModel:
         scalar = np.isscalar(tyre_age)
         ages   = np.atleast_1d(np.asarray(tyre_age, dtype=float))
         result = self._compound_models[compound].predict(ages)
+        result = self._apply_temp_scale(compound, ages, result)
 
         return float(result[0]) if scalar else result
 
@@ -520,7 +584,7 @@ class TyreDegModel:
             cliff_lo = cm.cliff_ci_[0] if cm.cliff_ci_ else None
             cliff_hi = cm.cliff_ci_[1] if cm.cliff_ci_ else None
 
-            rows.append({
+            row = {
                 "Compound":               compound,
                 "Baseline (s)":           round(cm.baseline, 3),
                 "Deg Rate 1→10 (s/lap)":  round(self.deg_rate(compound, 1, 10), 4),
@@ -534,6 +598,9 @@ class TyreDegModel:
                 "Fit mode":               cm.fit_mode,
                 "Training laps":          cm.n_laps,
                 "MAE (s)":                round(cm.mae, 4),
-            })
+            }
+            if self.temp_scale != 1.0:
+                row["Temp Scale"] = f"{self.temp_scale:.2f}×"
+            rows.append(row)
 
         return pd.DataFrame(rows)

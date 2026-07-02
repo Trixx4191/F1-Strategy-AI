@@ -9,7 +9,7 @@ import pandas as pd
 from src.simulator.rival import (
     RivalState, UndercutResult,
     evaluate_undercut, evaluate_overcut,
-    scan_undercut_window,
+    scan_undercut_window, scan_overcut_window,
 )
 from src.models.tyre_deg import TyreDegModel
 
@@ -149,7 +149,7 @@ class TestEvaluateOvercut:
             deg_model=model, pit_loss=22.0, noise_std=0.0,
         )
         for key in ("overcut_works", "gap_after_exchange", "pace_deficit_per_lap",
-                    "laps_sustainable"):
+                    "laps_sustainable", "ev_seconds"):
             assert key in result
 
     def test_overcut_fails_when_we_are_behind(self, model, rival_ahead):
@@ -223,3 +223,83 @@ class TestScanUndercutWindow:
         )
         for _, row in df.iterrows():
             assert row["p10_ev"] <= row["p50_ev"] <= row["p90_ev"]
+
+
+# ── Overcut window scan tests ─────────────────────────────────────────────────
+
+class TestScanOvercutWindow:
+    def test_returns_dataframe_correct_shape(self, model, rival_behind):
+        df = scan_overcut_window(
+            from_lap=15, to_lap=25,
+            our_compound="MEDIUM", our_tyre_age_at_from_lap=15,
+            new_compound="SOFT", rival=rival_behind,
+            deg_model=model, pit_loss=22.0,
+            n_simulations=30, noise_std=0.3,
+        )
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) == 11
+        assert set(df["lap"].tolist()) == set(range(15, 26))
+
+    def test_same_schema_as_undercut_scan(self, model, rival_behind):
+        """Overcut and undercut scans must share a schema for side-by-side UI display."""
+        df_over = scan_overcut_window(
+            from_lap=15, to_lap=20,
+            our_compound="MEDIUM", our_tyre_age_at_from_lap=15,
+            new_compound="SOFT", rival=rival_behind,
+            deg_model=model, pit_loss=22.0,
+            n_simulations=30, noise_std=0.3,
+        )
+        df_under = scan_undercut_window(
+            from_lap=15, to_lap=20,
+            our_compound="MEDIUM", our_tyre_age_at_from_lap=15,
+            new_compound="HARD", rival=rival_behind,
+            deg_model=model, pit_loss=22.0,
+            n_simulations=30, noise_std=0.3,
+        )
+        assert set(df_over.columns) == set(df_under.columns)
+
+    def test_win_rates_in_valid_range(self, model, rival_behind):
+        df = scan_overcut_window(
+            from_lap=18, to_lap=22,
+            our_compound="MEDIUM", our_tyre_age_at_from_lap=18,
+            new_compound="SOFT", rival=rival_behind,
+            deg_model=model, pit_loss=22.0,
+            n_simulations=50, noise_std=0.3,
+        )
+        assert (df["win_rate"] >= 0.0).all()
+        assert (df["win_rate"] <= 1.0).all()
+
+    def test_recommend_flag_consistent(self, model, rival_behind):
+        df = scan_overcut_window(
+            from_lap=15, to_lap=25,
+            our_compound="MEDIUM", our_tyre_age_at_from_lap=15,
+            new_compound="SOFT", rival=rival_behind,
+            deg_model=model, pit_loss=22.0,
+            n_simulations=50, noise_std=0.3,
+        )
+        for _, row in df.iterrows():
+            expected_rec = (row["win_rate"] >= 0.5) and (row["mean_ev"] > 0)
+            assert row["recommend"] == expected_rec
+
+    def test_p10_le_p50_le_p90(self, model, rival_behind):
+        df = scan_overcut_window(
+            from_lap=18, to_lap=22,
+            our_compound="MEDIUM", our_tyre_age_at_from_lap=18,
+            new_compound="SOFT", rival=rival_behind,
+            deg_model=model, pit_loss=22.0,
+            n_simulations=50, noise_std=0.3,
+        )
+        for _, row in df.iterrows():
+            assert row["p10_ev"] <= row["p50_ev"] <= row["p90_ev"]
+
+    def test_overcut_favourable_when_rival_far_behind(self, model):
+        """If rival is far behind us, staying out (overcut) should be clearly favourable."""
+        rival_far_behind = RivalState("SAI", "HARD", 12, gap_to_us=-8.0)
+        df = scan_overcut_window(
+            from_lap=18, to_lap=22,
+            our_compound="MEDIUM", our_tyre_age_at_from_lap=18,
+            new_compound="SOFT", rival=rival_far_behind,
+            deg_model=model, pit_loss=22.0,
+            n_simulations=50, noise_std=0.1,
+        )
+        assert df["recommend"].any()
