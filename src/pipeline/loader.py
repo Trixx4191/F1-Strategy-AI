@@ -69,18 +69,32 @@ def get_laps(session: fastf1.core.Session,
     return laps.reset_index(drop=True)
 
 
-def get_race_schedule(year: int) -> list[str]:
+def get_race_schedule(year: int, only_completed: bool = True) -> list[str]:
     """
     Fetch the list of race event names for a given season via FastF1.
+
+    Parameters
+    ----------
+    year            : Season year
+    only_completed  : If True (default), excludes events whose EventDate is
+                       in the future — prevents selecting a GP that hasn't
+                       happened yet and therefore has no session data.
+                       Only affects the current (in-progress) season; past
+                       seasons are entirely in the past and unaffected.
 
     Returns a list of event names in calendar order (e.g. ["Bahrain", "Saudi Arabia", ...]).
     Falls back to a hardcoded 2024 list if the API call fails so the UI never breaks.
     """
     try:
         schedule = fastf1.get_event_schedule(year, include_testing=False)
+
+        if only_completed:
+            today = pd.Timestamp.now().normalize()
+            schedule = schedule[schedule["EventDate"] <= today]
+
         # 'EventName' column contains the full GP name; strip " Grand Prix" suffix
         names = schedule["EventName"].str.replace(" Grand Prix", "", regex=False).str.strip().tolist()
-        log.info(f"Loaded {len(names)} events for {year} season")
+        log.info(f"Loaded {len(names)} completed events for {year} season")
         return names
     except Exception as e:
         log.warning(f"Could not fetch {year} schedule from FastF1: {e} — using fallback list")
@@ -91,6 +105,27 @@ def get_race_schedule(year: int) -> list[str]:
             "Italian", "Azerbaijan", "Singapore", "United States",
             "Mexico City", "São Paulo", "Las Vegas", "Qatar", "Abu Dhabi",
         ]
+
+
+def get_latest_available_year() -> int:
+    """
+    Determine the most recent F1 season with at least one completed race.
+
+    Tries the current calendar year first; if that season's schedule has
+    no completed events yet (e.g. it's January and pre-season testing is
+    the only thing on the calendar), falls back to the previous year.
+    This means the dashboard's season selector never needs a manual
+    yearly bump — it tracks whatever FastF1 currently has data for.
+    """
+    from datetime import date
+    this_year = date.today().year
+    try:
+        races_this_year = get_race_schedule(this_year, only_completed=True)
+        if races_this_year:
+            return this_year
+    except Exception as e:
+        log.warning(f"Could not check {this_year} season: {e}")
+    return this_year - 1
 
 
 def get_session_drivers(session: fastf1.core.Session) -> list[str]:

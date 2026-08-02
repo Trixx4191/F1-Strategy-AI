@@ -149,6 +149,87 @@ class TestLoader:
         assert "LapTimeSec" in result.columns
         assert result["LapTimeSec"].dtype == float
 
+    def test_get_race_schedule_filters_future_events(self, monkeypatch):
+        """only_completed=True must exclude events dated after today —
+        this is what stops the dashboard offering a GP with no data yet."""
+        from src.pipeline import loader
+
+        today = pd.Timestamp.now().normalize()
+        fake_schedule = pd.DataFrame({
+            "EventName": ["Bahrain Grand Prix", "Future City Grand Prix"],
+            "EventDate": [today - pd.Timedelta(days=30), today + pd.Timedelta(days=30)],
+        })
+
+        monkeypatch.setattr(loader.fastf1, "get_event_schedule", lambda *a, **kw: fake_schedule)
+
+        result = loader.get_race_schedule(2099, only_completed=True)
+        assert result == ["Bahrain"]
+
+    def test_get_race_schedule_includes_all_when_not_filtering(self, monkeypatch):
+        from src.pipeline import loader
+
+        today = pd.Timestamp.now().normalize()
+        fake_schedule = pd.DataFrame({
+            "EventName": ["Bahrain Grand Prix", "Future City Grand Prix"],
+            "EventDate": [today - pd.Timedelta(days=30), today + pd.Timedelta(days=30)],
+        })
+
+        monkeypatch.setattr(loader.fastf1, "get_event_schedule", lambda *a, **kw: fake_schedule)
+
+        result = loader.get_race_schedule(2099, only_completed=False)
+        assert set(result) == {"Bahrain", "Future City"}
+
+    def test_get_race_schedule_defaults_to_completed_only(self, monkeypatch):
+        """The default (no argument) must be only_completed=True — a caller
+        that forgets the flag should never see an unraced future GP."""
+        from src.pipeline import loader
+
+        today = pd.Timestamp.now().normalize()
+        fake_schedule = pd.DataFrame({
+            "EventName": ["Past Grand Prix", "Future Grand Prix"],
+            "EventDate": [today - pd.Timedelta(days=1), today + pd.Timedelta(days=1)],
+        })
+        monkeypatch.setattr(loader.fastf1, "get_event_schedule", lambda *a, **kw: fake_schedule)
+
+        result = loader.get_race_schedule(2099)
+        assert result == ["Past"]
+
+    def test_get_latest_available_year_uses_current_year_if_races_exist(self, monkeypatch):
+        from src.pipeline import loader
+        from datetime import date
+
+        this_year = date.today().year
+        monkeypatch.setattr(loader, "get_race_schedule",
+                            lambda y, only_completed=True: ["Bahrain"] if y == this_year else [])
+
+        result = loader.get_latest_available_year()
+        assert result == this_year
+
+    def test_get_latest_available_year_falls_back_when_no_races_yet(self, monkeypatch):
+        """Early January, before the first race of the new season — the
+        selector should fall back to last year rather than show an empty
+        season with no data."""
+        from src.pipeline import loader
+        from datetime import date
+
+        this_year = date.today().year
+        monkeypatch.setattr(loader, "get_race_schedule", lambda y, only_completed=True: [])
+
+        result = loader.get_latest_available_year()
+        assert result == this_year - 1
+
+    def test_get_latest_available_year_falls_back_on_exception(self, monkeypatch):
+        from src.pipeline import loader
+        from datetime import date
+
+        this_year = date.today().year
+        def _raise(*a, **kw):
+            raise RuntimeError("network error")
+        monkeypatch.setattr(loader, "get_race_schedule", _raise)
+
+        result = loader.get_latest_available_year()
+        assert result == this_year - 1
+
 
 # ── Column preservation regression tests ────────────────────────────────────
 #

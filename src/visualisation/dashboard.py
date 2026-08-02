@@ -9,9 +9,7 @@ Design language: broadcast-dark data terminal.
 """
 
 import sys, base64
-from html import escape
 from pathlib import Path
-from textwrap import dedent
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -26,7 +24,7 @@ import matplotlib.pyplot as plt
 from src.pipeline.loader import (
     load_session, get_laps, get_pit_stops,
     get_race_schedule, get_session_drivers, get_race_laps,
-    get_track_temp, get_final_classification,
+    get_track_temp, get_final_classification, get_latest_available_year,
 )
 from src.pipeline.cleaner import clean_laps
 from src.pipeline.features import engineer_features
@@ -88,11 +86,6 @@ st.set_page_config(
 def _b64(p: Path) -> str:
     with open(p, "rb") as f:
         return base64.b64encode(f.read()).decode()
-
-
-def _html(markup: str) -> None:
-    """Render custom HTML without Markdown turning indented blocks into code."""
-    st.markdown(dedent(markup).strip(), unsafe_allow_html=True)
 
 _IMG_RED  = _b64(_DIR / "F1_RED.jpeg")
 _IMG_JACK = _b64(_DIR / "JACK TEAM RACING.jpeg")
@@ -217,17 +210,9 @@ html, body, .stApp {{
 [data-testid="stSidebar"] {{
   background:var(--off) !important;
   border-right:1px solid var(--border) !important;
-  min-width:320px !important; max-width:320px !important;
+  min-width:276px !important; max-width:276px !important;
 }}
 [data-testid="stSidebar"] > div:first-child {{ padding:0 !important; }}
-@media (max-width: 900px) {{
-  [data-testid="stSidebar"] {{
-    min-width:292px !important; max-width:292px !important;
-  }}
-  .main .block-container {{
-    padding: 0 1rem 3rem !important;
-  }}
-}}
 
 .sb-header {{
   padding:1.4rem 1.25rem 1rem;
@@ -295,51 +280,6 @@ html, body, .stApp {{
   width:100% !important; transition:border-color .15s !important;
 }}
 .stButton > button:not([kind="primary"]):hover {{ border-color:var(--red) !important; }}
-
-/* real section selector */
-div[role="radiogroup"][aria-label="Dashboard section"] {{
-  display:grid !important;
-  grid-template-columns:repeat(5,minmax(0,1fr));
-  gap:0 !important;
-  border:1px solid var(--border);
-  background:rgba(0,0,0,.94);
-  margin:1.2rem 0 1.8rem;
-}}
-div[role="radiogroup"][aria-label="Dashboard section"] label {{
-  min-height:46px !important;
-  border-right:1px solid var(--border);
-  border-radius:0 !important;
-  background:transparent !important;
-  padding:.8rem 1rem !important;
-  justify-content:center !important;
-}}
-div[role="radiogroup"][aria-label="Dashboard section"] label:last-child {{
-  border-right:none;
-}}
-div[role="radiogroup"][aria-label="Dashboard section"] label p {{
-  font-family:var(--font-b) !important;
-  font-size:.62rem !important;
-  font-weight:700 !important;
-  letter-spacing:.18em !important;
-  color:var(--dim) !important;
-  text-transform:uppercase !important;
-  white-space:nowrap;
-}}
-div[role="radiogroup"][aria-label="Dashboard section"] label:has(input:checked) {{
-  border-bottom:2px solid var(--red);
-  background:rgba(232,0,45,.07) !important;
-}}
-div[role="radiogroup"][aria-label="Dashboard section"] label:has(input:checked) p {{
-  color:var(--white) !important;
-}}
-div[role="radiogroup"][aria-label="Dashboard section"] [data-testid="stWidgetLabel"] {{
-  display:none;
-}}
-@media (max-width: 980px) {{
-  div[role="radiogroup"][aria-label="Dashboard section"] {{
-    grid-template-columns:1fr 1fr;
-  }}
-}}
 
 /* ═══════════ HERO ═══════════ */
 .hero {{
@@ -653,7 +593,7 @@ hr {{ border-color:var(--border) !important; margin:1.5rem 0 !important; }}
 </style>
 """.format(IMG_RED=_IMG_RED, IMG_JACK=_IMG_JACK)
 
-_html(_CSS)
+st.markdown(_CSS, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════
 # SIDEBAR
@@ -667,12 +607,27 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
     st.markdown('<div class="sb-section">Session</div>', unsafe_allow_html=True)
-    year = st.selectbox("SEASON", [2024,2023,2022,2021,2020,2019,2018], index=0,
-                        label_visibility="collapsed")
+
+    @st.cache_data(show_spinner=False, ttl=86400)  # refresh once a day
+    def _get_latest_year():
+        return get_latest_available_year()
+
+    latest_year = _get_latest_year()
+    # Always starts at whatever FastF1 currently has completed-race data
+    # for — no manual bump needed when a new season starts. 2018 is the
+    # practical floor: FastF1's lap-level telemetry is reliable from here.
+    year_options = list(range(latest_year, 2017, -1))
+    year = st.selectbox("SEASON", year_options, index=0, label_visibility="collapsed")
 
     @st.cache_data(show_spinner=False)
-    def _get_races(y): return get_race_schedule(y)
+    def _get_races(y):
+        # Only the latest season needs future-race filtering — past
+        # seasons are entirely in the past already.
+        return get_race_schedule(y, only_completed=(y == latest_year))
     race_list = _get_races(year)
+    if not race_list:
+        st.warning(f"No completed races found yet for {year}.")
+        st.stop()
     race = st.selectbox("GRAND PRIX", race_list, index=0)
 
     st.markdown('<div class="sb-section">Driver</div>', unsafe_allow_html=True)
@@ -721,7 +676,11 @@ st.markdown(f"""
 <div class="f1-nav">
   <div class="f1-nav-logo"><div class="f1-nav-dot"></div>F1 Strategy AI</div>
   <div class="f1-nav-items">
-    <div class="f1-nav-item active">Race Strategy Console</div>
+    <div class="f1-nav-item active">Strategy</div>
+    <div class="f1-nav-item">Tyre Model</div>
+    <div class="f1-nav-item">Rival Analysis</div>
+    <div class="f1-nav-item">Results</div>
+    <div class="f1-nav-item">Backtest</div>
   </div>
   <div class="f1-nav-right">
     <span class="f1-live-badge">AI</span>{year} · {race}
@@ -770,23 +729,7 @@ st.markdown(f"""
 # ═══════════════════════════════════════════════════════════════════
 # LANDING STATE — animated feature cards with real capabilities
 # ═══════════════════════════════════════════════════════════════════
-sim_signature = (
-    year,
-    race,
-    driver_code,
-    n_sims,
-    stop_strategy,
-    round(float(noise), 3),
-    bool(use_live_temp),
-    manual_temp,
-)
-sim_bundle = st.session_state.get("sim_bundle")
-has_current_sim = (
-    sim_bundle is not None
-    and sim_bundle.get("signature") == sim_signature
-)
-
-if not run_btn and not has_current_sim:
+if not run_btn:
     st.markdown(f"""
     <div class="feat-grid">
       <div class="feat-card">
@@ -880,70 +823,42 @@ plt.rcParams.update({
 # ═══════════════════════════════════════════════════════════════════
 # DATA PIPELINE
 # ═══════════════════════════════════════════════════════════════════
-if run_btn:
-    with st.spinner("Loading FastF1 session data…"):
-        try:
-            session         = load_session(year, race)
-            laps_raw        = get_laps(session)
-            pit_stops       = get_pit_stops(session)
-            race_total_laps = get_race_laps(session)
-            session_drivers = get_session_drivers(session)
-            weather         = get_track_temp(session)
-            classification  = get_final_classification(session, top_n=8)
-        except Exception as e:
-            st.error(f"Failed to load session: {e}")
-            st.stop()
+with st.spinner("Loading FastF1 session data…"):
+    try:
+        session         = load_session(year, race)
+        laps_raw        = get_laps(session)
+        pit_stops       = get_pit_stops(session)
+        race_total_laps = get_race_laps(session)
+        session_drivers = get_session_drivers(session)
+        weather         = get_track_temp(session)
+        classification  = get_final_classification(session, top_n=8)
+    except Exception as e:
+        st.error(f"Failed to load session: {e}")
+        st.stop()
 
-    with st.spinner("Cleaning & feature engineering…"):
-        laps = clean_laps(laps_raw)
-        laps = engineer_features(laps, total_laps=race_total_laps)
+with st.spinner("Cleaning & feature engineering…"):
+    laps = clean_laps(laps_raw)
+    laps = engineer_features(laps, total_laps=race_total_laps)
 
-    with st.spinner("Fitting 3-phase tyre degradation model…"):
-        deg_model = TyreDegModel()
-        deg_model.fit(laps, driver=driver_code)
-        pit_loss = get_pit_loss(pit_stops)
+with st.spinner("Fitting 3-phase tyre degradation model…"):
+    deg_model = TyreDegModel()
+    deg_model.fit(laps, driver=driver_code)
+    pit_loss = get_pit_loss(pit_stops)
 
-        # Track temperature scaling — live session data unless overridden
-        effective_temp = manual_temp if not use_live_temp else (weather["track_temp"] if weather else None)
-        deg_model.set_track_temp(effective_temp)
+    # Track temperature scaling — live session data unless overridden
+    effective_temp = manual_temp if not use_live_temp else (weather["track_temp"] if weather else None)
+    deg_model.set_track_temp(effective_temp)
 
-    with st.spinner(f"Running {n_sims:,} Monte Carlo simulations…"):
-        strategies = []
-        if stop_strategy in ["1-stop", "Both"]:
-            strategies += generate_one_stop_strategies(race_total_laps)
-        if stop_strategy in ["2-stop", "Both"]:
-            strategies += generate_two_stop_strategies(race_total_laps)
-        mc_results = run_monte_carlo(
-            strategies, deg_model, pit_loss,
-            n_simulations=n_sims, noise_std=noise,
-        )
-
-    st.session_state["sim_bundle"] = {
-        "signature": sim_signature,
-        "laps_raw": laps_raw,
-        "laps": laps,
-        "deg_model": deg_model,
-        "pit_loss": pit_loss,
-        "effective_temp": effective_temp,
-        "strategies": strategies,
-        "mc_results": mc_results,
-        "race_total_laps": race_total_laps,
-        "session_drivers": session_drivers,
-        "weather": weather,
-        "classification": classification,
-    }
-else:
-    laps_raw        = sim_bundle["laps_raw"]
-    laps            = sim_bundle["laps"]
-    deg_model       = sim_bundle["deg_model"]
-    pit_loss        = sim_bundle["pit_loss"]
-    effective_temp  = sim_bundle["effective_temp"]
-    strategies      = sim_bundle["strategies"]
-    mc_results      = sim_bundle["mc_results"]
-    race_total_laps = sim_bundle["race_total_laps"]
-    session_drivers = sim_bundle["session_drivers"]
-    weather         = sim_bundle["weather"]
-    classification  = sim_bundle["classification"]
+with st.spinner(f"Running {n_sims:,} Monte Carlo simulations…"):
+    strategies = []
+    if stop_strategy in ["1-stop", "Both"]:
+        strategies += generate_one_stop_strategies(race_total_laps)
+    if stop_strategy in ["2-stop", "Both"]:
+        strategies += generate_two_stop_strategies(race_total_laps)
+    mc_results = run_monte_carlo(
+        strategies, deg_model, pit_loss,
+        n_simulations=n_sims, noise_std=noise,
+    )
 
 # ═══════════════════════════════════════════════════════════════════
 # SUCCESS BAR
@@ -1050,10 +965,10 @@ if not classification.empty:
     for _, row in classification.iterrows():
         pos      = row.get("Position", "—")
         pos_cls  = f"p{int(pos)}" if str(pos).replace(".0","").isdigit() and int(float(pos)) <= 3 else ""
-        drv_code = escape(str(row.get("Driver", "—")))
-        team     = escape(str(row.get("TeamName", "")))
-        time_val = escape(str(row.get("Time", "—")))
-        status   = escape(str(row.get("Status", "")))
+        drv_code = str(row.get("Driver", "—"))
+        team     = str(row.get("TeamName", ""))
+        time_val = str(row.get("Time", "—"))
+        status   = str(row.get("Status", ""))
         is_self  = drv_code == driver_code
         drv_meta = DRIVERS.get(drv_code, {"color": "#666"})
         team_color = drv_meta["color"]
@@ -1063,49 +978,42 @@ if not classification.empty:
             time_val = time_val.split("0 days ")[-1]
         status_color = "#39b54a" if status.lower() == "finished" else "#e8002d"
 
-        pos_display = int(float(pos)) if str(pos).replace(".0", "").isdigit() else escape(str(pos))
         tt_rows_html += f"""
-<div class="tt-row {'self' if is_self else ''}">
-  <div class="tt-pos {pos_cls}">{pos_display}</div>
-  <div class="tt-team-bar" style="background:{team_color}"></div>
-  <div>
-    <div class="tt-driver">{drv_code}</div>
-    <div class="tt-team">{team}</div>
-  </div>
-  <div class="tt-time">{time_val[:12]}</div>
-  <div class="tt-status" style="color:{status_color}">{status}</div>
-</div>
-"""
+        <div class="tt-row {'self' if is_self else ''}">
+          <div class="tt-pos {pos_cls}">{int(float(pos)) if str(pos).replace('.0','').isdigit() else pos}</div>
+          <div class="tt-team-bar" style="background:{team_color}"></div>
+          <div>
+            <div class="tt-driver">{drv_code}</div>
+            <div class="tt-team">{team}</div>
+          </div>
+          <div class="tt-time">{time_val[:12]}</div>
+          <div class="tt-status" style="color:{status_color}">{status}</div>
+        </div>
+        """
 
-    _html(f"""
-<div class="tt-wrap">
-  <div class="tt-head">
-    <span>Timing Tower - Actual Result</span>
-    <span>{year} {escape(str(race))} GP</span>
-  </div>
-  {tt_rows_html}
-</div>
-""")
+    st.markdown(f"""
+    <div class="tt-wrap">
+      <div class="tt-head">
+        <span>Timing Tower — Actual Result</span>
+        <span>{year} {race} GP</span>
+      </div>
+      {tt_rows_html}
+    </div>
+    """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════
-# REAL SECTION NAVIGATION
+# TABS
 # ═══════════════════════════════════════════════════════════════════
-section = st.radio(
-    "Dashboard section",
-    [
-        "Strategy Comparison",
-        "Undercut Window",
-        "Tyre Model",
-        "Results & Backtest",
-        "Rival Analysis",
-    ],
-    horizontal=True,
-    label_visibility="collapsed",
-    key="dashboard_section",
-)
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "Strategy Comparison",
+    "Undercut Window",
+    "Tyre Model",
+    "Results & Backtest",
+    "Rival Analysis",
+])
 
 # ── TAB 1: STRATEGY COMPARISON ───────────────────────────────────
-if section == "Strategy Comparison":
+with tab1:
     col_l, col_r = st.columns([3, 1])
 
     with col_l:
@@ -1157,7 +1065,7 @@ if section == "Strategy Comparison":
     st.pyplot(fig_trace, use_container_width=True)
 
 # ── TAB 2: UNDERCUT WINDOW ────────────────────────────────────────
-if section == "Undercut Window":
+with tab2:
     st.markdown('<div class="sh"><span>Undercut Window</span> — Pit Lap Heatmap by Compound Pair</div>', unsafe_allow_html=True)
     fig_uw = plot_undercut_window(mc_results, race_total_laps, save=False)
     if fig_uw:
@@ -1187,7 +1095,7 @@ if section == "Undercut Window":
         st.warning("No 1-stop strategies found — switch strategy type to include 1-stop.")
 
 # ── TAB 3: TYRE MODEL ────────────────────────────────────────────
-if section == "Tyre Model":
+with tab3:
     col_a, col_b = st.columns([2.2, 1])
     with col_a:
         temp_note = (
@@ -1248,7 +1156,7 @@ if section == "Tyre Model":
         st.dataframe(pd.DataFrame(phase_rows), use_container_width=True, hide_index=True)
 
 # ── TAB 4: RESULTS & BACKTEST ────────────────────────────────────
-if section == "Results & Backtest":
+with tab4:
     # 1-stop vs 2-stop summary
     n1 = len(mc_results[mc_results["pit_count"] == 1])
     n2 = len(mc_results[mc_results["pit_count"] == 2])
@@ -1357,7 +1265,7 @@ if section == "Results & Backtest":
         st.warning(f"Backtest unavailable: {e}")
 
 # ── TAB 5: RIVAL ANALYSIS ────────────────────────────────────────
-if section == "Rival Analysis":
+with tab5:
     if session_drivers:
         rival_pool = [k for k in session_drivers if k != driver_code and k in DRIVERS]
         if not rival_pool:
