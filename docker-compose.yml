@@ -1,0 +1,15 @@
+services:
+  dashboard:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      # Persist FastF1's HTTP cache across container restarts — without this,
+      # every `docker compose up` re-downloads session data from scratch.
+      - fastf1-cache:/app/data/cache
+    environment:
+      - PYTHONPATH=/app
+    restart: unless-stopped
+
+volumes:
+  fastf1-cache:

@@ -1,0 +1,15 @@
+.git
+.github
+data/cache/
+outputs/
+notebooks/
+*.pyc
+__pycache__/
+.pytest_cache/
+venv/
+.venv/
+*.egg-info/
+.DS_Store
+README.md
+docs/
+tests/
