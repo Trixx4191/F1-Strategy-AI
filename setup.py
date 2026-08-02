@@ -19,6 +19,7 @@ setup(
         "streamlit>=1.32.0",
         "python-dotenv>=1.0.0",
         "tqdm>=4.66.0",
+        "pwlf>=0.5.0",
     ],
     extras_require={
         "dev": [

@@ -4,57 +4,99 @@ Ordered by impact-to-effort ratio. Items at the top are the highest-value additi
 
 ---
 
+## Implemented capabilities
+
+These capabilities are implemented and remain open to validation and improvement.
+
+- **Rival modelling (undercut *and* overcut)** — `rival.py` scans both directions
+  against a configurable rival, with EV, P10–P90, and win rate per candidate lap,
+  displayed side by side. The scans use different evaluation horizons;
+  direct comparison of their EV values still needs validation.
+- **Tyre cliff detection** — replaced the polynomial with a 3-phase piecewise-linear
+  model with a fitted cliff estimate. Interval outputs are experimental
+  and their statistical coverage has not been validated.
+- **Driver-specific deg model** — implemented as weighted-blend fitting (`sample_weight`
+  up-weighting), not pure filtering — see `docs/decisions.md` for why filtering alone
+  was rejected.
+- **CI pipeline** — GitHub Actions automates project checks.
+- **Results export and backtesting** — Backtest tab reconstructs the actual driver
+  strategy from FastF1 stint data and compares deterministic race time against the
+  AI-optimal strategy.
+- **Track temperature / weather sensitivity** — `TyreDegModel.set_track_temp()` scales
+  degradation excess against live session weather data.
+- **Dynamic season range** — the dashboard's year selector auto-detects the latest
+  completed season via `get_latest_available_year()`; no manual yearly bump needed.
+- **Dockerfile / docker-compose** — one-command local run.
+
+---
+
 ## 🔴 High Impact — Do These Next
 
-### 1. Rival modelling (undercut/overcut simulation)
-**What**: Add a rival car's strategy to the simulation. Compute whether undercutting a specific rival is +EV based on the position gap and tyre delta.
+### 1. Safety Car Monte Carlo layer
+**What**: Sample SC events probabilistically per Monte Carlo iteration and
+evaluate whether pitting under an SC improves the simulated strategy.
 
-**Why it matters**: F1 strategy is never about absolute race time — it's always relative. "Should we pit now to undercut Norris?" is the real question. Without a rival model, this is a calculator, not a strategy tool.
+**Why it matters**: The main strategy simulation does not currently apply
+safety-car effects. `lap_time.py` defines a separate expected-value helper,
+but the main simulator does not call it.
 
-**How**: Add `RivalState` to `race_sim.py`. On each lap, check: if we pit this lap, does our out-lap + our new tyre advantage beat rival's current position? Output a per-lap undercut EV chart.
-
----
-
-### 2. Safety car strategic response
-**What**: In the Monte Carlo, sample SC events probabilistically. When an SC occurs, trigger a "free pit" option and evaluate whether pitting under SC is optimal.
-
-**Why it matters**: Safety cars can change pit-stop costs and strategy choices;
-the proposed simulation would explore those scenarios.
-
-**How**: Add `SCEvent(lap, duration)` to race sim. When SC event fires in MC iteration, re-evaluate pit decision.
+**How**: Extract historical SC lap frequency from FastF1 `TrackStatus` per circuit.
+Sample SC occurrence per MC iteration. When one fires within N laps of a planned
+pit, allow the simulation to bring the stop forward.
 
 ---
 
-### 3. Multi-race tyre model training
-**What**: Fit the degradation model on all dry races in the season, not just the target race. Use race as a categorical feature (or train per-circuit family).
+### 2. Circuit-cluster multi-race training
+**What**: Fit the degradation model on laps pooled across circuits with similar
+degradation character (e.g. Bahrain + Qatar + Abu Dhabi), not just the target race.
 
-**Why it matters**: Single-race fit has ~15–25 laps of data per compound — borderline for quadratic regression. Training on 5 similar circuits (Bahrain + other high-deg tracks) gives 3–5× more data.
+**Why it matters**: Pooling races could increase available training data,
+but transfer across circuits needs evaluation. It could also support
+a mixed-effects driver model with random intercepts and slopes.
 
-**How**: `loader.py` already supports arbitrary `year`/`race` inputs. Add a `batch_load_sessions()` function.
+**How**: `loader.py` already supports arbitrary `year`/`race` inputs — add a
+`batch_load_sessions()` function and a `circuit_offset` fixed-effect feature so the
+core curve shape transfers across circuits while the intercept shifts per track.
+
+---
+
+### 3. Strategy history tab
+**What**: Pit lap heatmap by year for the selected circuit — x-axis lap number,
+y-axis year, colour = number of drivers who pitted that lap. Overlay the winning
+strategy each year.
+
+**Why it matters**: Historical pit choices would provide context for the
+simulated recommendations, while remaining separate from evidence of accuracy.
+
+**How**: Pull all historical years for the circuit via `get_race_schedule()` per
+year, extract pit laps per driver via `get_pit_stops()`, render as a `seaborn` heatmap.
 
 ---
 
 ## 🟡 Medium Impact — Good Portfolio Additions
 
-### 4. Tyre cliff detection
-**What**: Identify the inflection point where deg rate accelerates sharply (the "cliff"). Alert the strategy engine when a compound is approaching its cliff.
+### 4. Multi-car rival scanning
+**What**: Currently `rival.py` evaluates one rival at a time. Extend to scan
+multiple simultaneous rivals (e.g. a 3-way DRS train).
 
-**How**: Evaluate a change-point or piecewise model for estimating a cliff.
-The second derivative of a quadratic is constant and cannot locate a change point.
+### 5. Telemetry analysis module
+**What**: Track map (lat/lon from FastF1 position data), speed/brake/throttle
+traces, delta-to-reference-lap, sector time breakdown. A different skill
+demonstration than the strategy engine — signal processing and time alignment
+rather than Monte Carlo.
 
----
+**Status**: Scoped as the next major module — see project README roadmap.
 
-### 5. Weather / compound selection for qualifying
-**What**: Use FastF1 weather data (`session.weather_data`) to model how ambient temperature affects compound performance. Temperature sensitivity would need calibration against race data.
+### 6. Mixed-effects driver modelling
+**What**: Once circuit-cluster training (item 2) provides enough per-driver data,
+replace the current weighted-blend approximation with a proper mixed-effects
+model — random intercept/slope per driver, shrunk toward the fleet mean when
+data is sparse, converging to the driver-specific value as data accumulates.
 
-**How**: Add `AmbientTemp` as a feature in the deg model. `features.py` already has a hook point (`add_fuel_corrected_lap_time` → add `add_temp_correction`).
-
----
-
-### 6. Driver-specific deg model
-**What**: Currently the model is fitted on all drivers' laps. A driver who is notably hard/easy on tyres will be misrepresented.
-
-**How**: Add `driver` filter option to `TyreDegModel.fit()`. Include a comparison chart of deg rates by driver.
+**Why it matters**: The weighted-blend approach is a reasonable approximation
+given single-race data constraints, but a true mixed-effects model handles the
+sparse-vs-abundant-data tradeoff statistically rather than via a fixed weight
+multiplier.
 
 ---
 
@@ -63,47 +105,23 @@ The second derivative of a quadratic is constant and cannot locate a change poin
 ### 7. Jupyter notebook EDA
 **Status**: Directory created (`notebooks/`) but notebooks not yet written.
 
-**What to build**:
 - `01_data_exploration.ipynb` — lap time distributions, compound usage by team, pit timing scatter
-- `02_tyre_deg_modelling.ipynb` — interactive model fitting, residual plots, MAE by compound
+- `02_tyre_deg_modelling.ipynb` — interactive piecewise fitting, residual plots, cliff detection walkthrough
 - `03_strategy_simulation.ipynb` — run MC interactively, visualise confidence intervals
-- `04_results_analysis.ipynb` — compare simulated result vs actual race result
+- `04_results_analysis.ipynb` — compare simulated result vs actual race result (extends the backtest tab)
 
----
+### 8. Streamlit Cloud / Fly.io public deployment
+Deploy the dashboard publicly so it can be demoed without cloning. Requires
+handling the FastF1 cache in a cloud-safe way — either a persistent volume
+(Fly.io) or accepting slower first-loads per session (Streamlit Cloud's
+ephemeral filesystem).
 
-### 8. CI pipeline
-Add a GitHub Actions workflow to run `pytest tests/` on every push.
+### 9. Grounded natural-language Q&A ("Race Engineer")
+**What**: Answer questions like "why were we slower in sector 2" by querying
+telemetry (item 5), the degradation model, and weather data, and producing a
+report where every claim traces to a specific retrieved number — not a chatbot
+wrapper. Depends on item 5 existing first, since it needs sector-level data to
+query against.
 
-```yaml
-name: tests
-on: [push]
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
-      - run: pip install -r requirements.txt
-      - run: pytest tests/ -v
-```
-
-This is worth doing before sharing the repo publicly.
-
----
-
-### 9. Results export and backtesting
-**What**: After simulation, compare the predicted optimal pit lap to the actual pit lap used in the race. Compute the delta (s) between optimal strategy and actual strategy.
-
-**Why it matters**: Comparing reconstructed and simulated strategies would
-help inspect model behaviour. A simulated time difference does not establish
-what a different real-world pit call would have achieved.
-
-**How**: Load actual pit stop data from `loader.get_pit_stops()`. Build the "actual strategy" as a `Strategy` object. Run it through `simulate_race()` with no noise. Compare to MC optimal.
-
----
-
-### 10. Streamlit cloud deployment
-Once the dashboard is stable, deploy to [share.streamlit.io](https://share.streamlit.io) so interviewers can demo it without cloning.
-
-Note: requires handling the FastF1 cache in a cloud-safe way (use `/tmp/` and accept slow first loads).
+**Status**: Deliberately scoped last — needs the telemetry data layer in place
+to have anything real to ground its answers in.

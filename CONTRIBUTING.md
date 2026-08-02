@@ -9,26 +9,41 @@ git clone https://github.com/Trixx4191/F1-Strategy-AI.git
 cd f1-strategy-ai
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-pip install pytest jupyterlab  # dev extras
+```
+
+`requirements.txt` already includes `pytest` and `jupyterlab` — no separate dev-extras install needed.
+
+Or with Docker:
+
+```bash
+docker compose up --build
 ```
 
 ## Areas Where Help Is Most Valuable
 
-**Tyre model improvements**
-- Non-linear cliff detection (changepoint / piecewise regression)
-- Compound-specific outlier strategies
+The tyre model, undercut/overcut engine, and driver-weighted fitting are
+implemented and remain open to validation and improvement. See
+[`docs/architecture.md`](docs/architecture.md) and
+[`docs/decisions.md`](docs/decisions.md) for implementation context.
+
+**Tyre model**
+- Circuit-cluster multi-race training (pool laps across similar-deg circuits — the
+  proposed way to increase training data; see `docs/improvements.md`)
+- Mixed-effects driver modelling once cluster training provides enough per-driver data
 
 **Simulation engine**
+- Safety Car Monte Carlo layer — sample SC events from historical `TrackStatus`
+  frequency and re-evaluate pit timing when one fires mid-simulation
 - Weather branching (wet / intermediate strategy paths)
-- Safety Car probability injection into MC iterations
 
 **Rival modelling**
-- Multi-car battle scanning (not just one rival)
+- Multi-car battle scanning (currently one rival at a time)
 - DRS train modelling
 
-**Data pipeline**
-- Telemetry sector analysis (sector-level pace delta)
-- Qualifying → race pace normalisation
+**Data pipeline / UI**
+- Strategy history tab — pit lap heatmap by year for the selected circuit
+- Telemetry analysis module — track map, speed/brake/throttle traces, sector deltas
+  (in progress, see project roadmap)
 
 ## Code Standards
 
