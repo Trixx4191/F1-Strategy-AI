@@ -1,7 +1,6 @@
 # Engineering Decisions
 
 This document describes modelling and data-pipeline design choices.
-
 ---
 
 ## 1. Why piecewise-linear replaced the degree-2 polynomial

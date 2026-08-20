@@ -1,7 +1,7 @@
 # 🏎 F1 Strategy AI — Monte Carlo Pit Stop & Rival Strategy Engine
 
 > **F1 timing data. Tyre-degradation modelling. Monte Carlo strategy exploration.**
-> A full-stack race strategy simulator built on FastF1 data, a 3-phase piecewise degradation model, vectorised Monte Carlo simulation, and an undercut/overcut rival engine — with a live Streamlit dashboard inspired by F1 broadcast telemetry design.
+> A full-stack race strategy simulator built on FastF1 data, a 3-phase piecewise degradation model, vectorised Monte Carlo simulation, and an undercut/overcut rival engine — with a live Streamlit dashboard.
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue?style=flat-square&logo=python)](https://python.org)
 [![FastF1](https://img.shields.io/badge/FastF1-3.3-red?style=flat-square)](https://theoehrly.github.io/Fast-F1/)
@@ -14,9 +14,9 @@
 
 F1 race strategy is a real-time optimisation problem under uncertainty: noisy tyre degradation, an opponent whose next move you don't control, and thousands of possible strategy combinations, all under a hard time budget.
 
-This project builds a strategy decision-support system from the data up — not a toy pit-stop calculator, but a system that models the physics of tyre wear, the economics of a pit stop, and the game-theoretic question of *when to fight for track position*:
+This project builds a strategy decision-support system from race data: a system that models the physics of tyre wear, the economics of a pit stop, and the game-theoretic question of *when to fight for track position*:
 
-- **Loads real race data** via FastF1 — lap times, tyre compounds, pit stops, weather, final classification — for **any season 2018–2024**, not a hardcoded race
+- **Loads real race data** via FastF1 — lap times, tyre compounds, pit stops, weather, final classification — for available completed sessions from 2018 onward
 - **Cleans and engineers features** — removes SC/VSC laps, inaccurate laps, fuel-corrects lap times, tracks stint-relative degradation
 - **Fits a 3-phase piecewise-linear degradation model** per compound (bedding → plateau → cliff), with fitted cliff-breakpoint estimates
 - **Scales degradation using session track temperature**
@@ -173,7 +173,7 @@ pip install -r requirements.txt
 PYTHONPATH=$(pwd) streamlit run src/visualisation/dashboard.py
 ```
 
-Open `http://localhost:8501` — select a season, race, and driver in the sidebar, then hit **RUN SIMULATION**. Every season 2018–2024 and every event in that season's calendar is available — nothing is hardcoded.
+Open `http://localhost:8501` — select a season, race, and driver in the sidebar, then hit **RUN SIMULATION**. The local application lists available completed sessions.
 
 > **First run:** FastF1 downloads session data (~50–200MB depending on race). Subsequent runs use the local cache.
 
@@ -208,7 +208,7 @@ DEG_MIN_LAPS_FALLBACK = 6      # Minimum laps for a 2-segment fallback fit
 DEG_CLIFF_THRESHOLD   = 0.12   # s/lap — minimum slope to call a segment a "cliff"
 ```
 
-Season, race, and driver are selected live in the dashboard sidebar — pulled from FastF1's event schedule, not hardcoded.
+Season, race, and driver are selected live in the dashboard sidebar — pulled from FastF1's event schedule.
 
 ---
 
