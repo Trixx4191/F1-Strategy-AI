@@ -128,6 +128,75 @@ def get_latest_available_year() -> int:
     return this_year - 1
 
 
+
+def _normalize_team_color(raw) -> str | None:
+    """FastF1 TeamColor is often '3671C6' without '#'; sometimes already hex."""
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return None
+    s = str(raw).strip()
+    if not s or s.lower() in ("nan", "none"):
+        return None
+    if not s.startswith("#"):
+        s = "#" + s
+    # expand 3-digit
+    if len(s) == 4:
+        s = "#" + "".join(c * 2 for c in s[1:])
+    if len(s) != 7:
+        return None
+    return s.upper()
+
+
+def get_driver_entry_list(session: fastf1.core.Session) -> list[dict]:
+    """
+    Year/race-accurate driver roster for the selected session.
+
+    Pulls Abbreviation, FullName, TeamName, TeamColor, DriverNumber from
+    session.results so UI mappings stay correct across seasons
+    (e.g. HAM → Ferrari in 2025+, not Mercedes).
+
+    Falls back to unique Driver codes from laps if results are empty.
+    """
+    entries: list[dict] = []
+    try:
+        results = session.results
+        if results is not None and not results.empty:
+            for _, r in results.iterrows():
+                code = str(r.get("Abbreviation") or r.get("Driver") or "").strip().upper()[:3]
+                if not code:
+                    continue
+                number = r.get("DriverNumber") or r.get("Number")
+                try:
+                    number = int(number) if pd.notna(number) else None
+                except (TypeError, ValueError):
+                    number = None
+                entries.append({
+                    "code": code,
+                    "name": str(r.get("FullName") or r.get("BroadcastName") or code),
+                    "team": str(r.get("TeamName") or "").strip(),
+                    "team_color": _normalize_team_color(r.get("TeamColor")),
+                    "number": number,
+                })
+            # Stable order by number then code
+            entries.sort(key=lambda e: (e["number"] is None, e["number"] or 999, e["code"]))
+            return entries
+    except Exception as e:
+        log.warning(f"Could not build entry list from results: {e}")
+
+    # Fallback: laps only
+    try:
+        for code in sorted(session.laps["Driver"].unique().tolist()):
+            entries.append({
+                "code": str(code).upper()[:3],
+                "name": str(code),
+                "team": "",
+                "team_color": None,
+                "number": None,
+            })
+    except Exception:
+        pass
+    return entries
+
+
 def get_session_drivers(session: fastf1.core.Session) -> list[str]:
     """
     Return list of driver codes who actually participated in this session.
@@ -178,30 +247,114 @@ def get_track_temp(session: fastf1.core.Session) -> dict | None:
         return None
 
 
-def get_final_classification(session: fastf1.core.Session, top_n: int = 5) -> pd.DataFrame:
+def get_final_classification(session: fastf1.core.Session, top_n: int | None = None) -> pd.DataFrame:
     """
-    Return the top-N finishing classification for the session.
+    Return finishing classification for the session.
 
-    Used to power the "timing tower" widget — grounds the tool's output
-    in what actually happened in the real race.
+    Used to power the timing tower — grounds the tool's output in what
+    actually happened in the real race.
+
+    Parameters
+    ----------
+    top_n : If given, limit to first N positions. None = full field.
 
     Returns
     -------
-    DataFrame with columns: Position, Driver, TeamName, Time, Status
+    DataFrame with columns: Position, Driver, TeamName, Time, Status, ...
     Empty DataFrame if results are unavailable.
     """
     try:
         results = session.results
         if results is None or results.empty:
             return pd.DataFrame()
-        cols = [c for c in ["Position", "Abbreviation", "TeamName", "Time", "Status", "GridPosition"]
-                if c in results.columns]
-        out = results[cols].head(top_n).copy()
+        cols = [c for c in [
+            "Position", "Abbreviation", "TeamName", "Time", "Status",
+            "GridPosition", "Points", "ClassifiedPosition",
+        ] if c in results.columns]
+        out = results[cols].copy()
+        if top_n is not None:
+            out = out.head(top_n)
         out = out.rename(columns={"Abbreviation": "Driver"})
         return out.reset_index(drop=True)
     except Exception as e:
         log.warning(f"Could not extract classification: {e}")
         return pd.DataFrame()
+
+
+def get_timing_tower_data(session: fastf1.core.Session) -> list[dict]:
+    """
+    Build dense timing-tower rows for the Mission Control UI.
+
+    Combines official classification with last-lap compound / tyre life
+    from the laps DataFrame so each row carries:
+      pos, driver, name, team, team_color (caller fills), gap, interval,
+      compound, tyre_age, last_lap, status
+    """
+    rows: list[dict] = []
+    try:
+        results = session.results
+        laps = session.laps
+        if results is None or results.empty:
+            return rows
+
+        # Last known compound + tyre life per driver
+        last_stint: dict[str, dict] = {}
+        if laps is not None and not laps.empty:
+            for drv, grp in laps.groupby("Driver"):
+                last = grp.sort_values("LapNumber").iloc[-1]
+                last_stint[str(drv)] = {
+                    "compound": str(last.get("Compound") or ""),
+                    "tyre_age": int(last["TyreLife"]) if pd.notna(last.get("TyreLife")) else None,
+                    "last_lap": float(last["LapTime"].total_seconds())
+                    if pd.notna(last.get("LapTime")) else None,
+                }
+
+        for _, r in results.iterrows():
+            code = str(r.get("Abbreviation") or r.get("Driver") or "")[:3]
+            pos = r.get("Position")
+            try:
+                pos = int(pos) if pd.notna(pos) else None
+            except (TypeError, ValueError):
+                pos = None
+
+            stint = last_stint.get(code, {})
+            time_val = r.get("Time")
+            gap = None
+            if pos == 1:
+                gap = 0.0
+            elif pd.notna(time_val):
+                try:
+                    gap = float(time_val.total_seconds())
+                except Exception:
+                    gap = None
+
+            _num = None
+            try:
+                if pd.notna(r.get("DriverNumber")):
+                    _num = int(r.get("DriverNumber"))
+            except (TypeError, ValueError):
+                _num = None
+            rows.append({
+                "pos": pos,
+                "driver": code,
+                "name": str(r.get("FullName") or code),
+                "team": str(r.get("TeamName") or ""),
+                "team_color": _normalize_team_color(r.get("TeamColor")),
+                "number": _num,
+                "gap": gap,
+                "interval": None,
+                "compound": stint.get("compound"),
+                "tyre_age": stint.get("tyre_age"),
+                "last_lap": stint.get("last_lap"),
+                "status": str(r.get("Status") or ""),
+            })
+
+        # Sort by position (None at end)
+        rows.sort(key=lambda x: (x["pos"] is None, x["pos"] or 999))
+        return rows
+    except Exception as e:
+        log.warning(f"Could not build timing tower data: {e}")
+        return rows
 
 
 def get_pit_stops(session: fastf1.core.Session) -> pd.DataFrame:
@@ -223,3 +376,73 @@ def get_pit_stops(session: fastf1.core.Session) -> pd.DataFrame:
     ).dt.total_seconds()
 
     return pit_laps[["Driver", "LapNumber", "PitDuration"]].reset_index(drop=True)
+
+
+def get_circuit_outline(session: fastf1.core.Session) -> dict:
+    """
+    Extract circuit geometry for the selected GP from FastF1 — no hardcoding.
+
+    Uses session.get_circuit_info() corner coordinates when available.
+    Returns:
+      {
+        "name": str,
+        "points": list[{"x": float, "y": float}],   # normalised 0–1
+        "corners": list[{"x": float, "y": float, "number": int}],
+      }
+    Empty points if geometry is unavailable for that session.
+    """
+    out = {"name": "", "points": [], "corners": []}
+    try:
+        event = getattr(session, "event", None)
+        if event is not None:
+            out["name"] = str(event.get("Location") or event.get("EventName") or "")
+
+        info = session.get_circuit_info()
+        if info is None:
+            return out
+
+        corners = getattr(info, "corners", None)
+        if corners is None or (hasattr(corners, "empty") and corners.empty):
+            return out
+
+        # corners typically has X, Y (or x, y) in metres
+        xcol = "X" if "X" in corners.columns else ("x" if "x" in corners.columns else None)
+        ycol = "Y" if "Y" in corners.columns else ("y" if "y" in corners.columns else None)
+        if xcol is None or ycol is None:
+            return out
+
+        xs = corners[xcol].astype(float).tolist()
+        ys = corners[ycol].astype(float).tolist()
+        if not xs:
+            return out
+
+        # Close the loop
+        if xs[0] != xs[-1] or ys[0] != ys[-1]:
+            xs = xs + [xs[0]]
+            ys = ys + [ys[0]]
+
+        minx, maxx = min(xs), max(xs)
+        miny, maxy = min(ys), max(ys)
+        dx = max(maxx - minx, 1e-9)
+        dy = max(maxy - miny, 1e-9)
+        # Keep aspect ratio inside 0–1 box with padding
+        pad = 0.08
+        scale = (1 - 2 * pad) / max(dx, dy)
+
+        def norm(x, y):
+            nx = pad + (x - minx) * scale + (1 - 2 * pad - dx * scale) / 2
+            ny = pad + (y - miny) * scale + (1 - 2 * pad - dy * scale) / 2
+            # SVG y grows downward — flip for map-like orientation
+            return {"x": float(nx), "y": float(1 - ny)}
+
+        out["points"] = [norm(x, y) for x, y in zip(xs, ys)]
+        numbers = corners["Number"].tolist() if "Number" in corners.columns else list(range(1, len(xs)))
+        out["corners"] = [
+            {**norm(float(corners.iloc[i][xcol]), float(corners.iloc[i][ycol])),
+             "number": int(numbers[i]) if i < len(numbers) else i + 1}
+            for i in range(len(corners))
+        ]
+        log.info(f"Circuit outline loaded: {len(out['points'])} points ({out['name']})")
+    except Exception as e:
+        log.warning(f"Could not extract circuit outline: {e}")
+    return out

@@ -18,7 +18,7 @@ develop-eggs/
 lib/
 lib64/
 wheels/
-
+frontend/node_modules/
 # ── Virtual environments ──────────────────────────────────────────────────────
 venv/
 .venv/

@@ -1,7 +1,7 @@
 # 🏎 F1 Strategy AI — Monte Carlo Pit Stop & Rival Strategy Engine
 
 > **F1 timing data. Tyre-degradation modelling. Monte Carlo strategy exploration.**
-> A full-stack race strategy simulator built on FastF1 data, a 3-phase piecewise degradation model, vectorised Monte Carlo simulation, and an undercut/overcut rival engine — with a live Streamlit dashboard.
+> A full-stack race strategy simulator built on FastF1 data, a 3-phase piecewise degradation model, vectorised Monte Carlo simulation, and an undercut/overcut rival engine — with a React + FastAPI interface.
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue?style=flat-square&logo=python)](https://python.org)
 [![FastF1](https://img.shields.io/badge/FastF1-3.3-red?style=flat-square)](https://theoehrly.github.io/Fast-F1/)
@@ -11,6 +11,19 @@
 ---
 
 ## What This Does
+
+## UI (current)
+
+**Primary UI is React Mission Control:**
+
+```bash
+PYTHONPATH=$(pwd) uvicorn backend.main:app --reload --port 8000
+cd frontend && npm install && npm run dev
+```
+
+See `docs/frontend_react.md`.  
+`src/visualisation/dashboard.py` and `dashboard_mc.py` are legacy Streamlit entry points.
+
 
 F1 race strategy is a real-time optimisation problem under uncertainty: noisy tyre degradation, an opponent whose next move you don't control, and thousands of possible strategy combinations, all under a hard time budget.
 
