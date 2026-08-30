@@ -92,6 +92,19 @@ def _cached_png_response(key: str, buf: io.BytesIO) -> StreamingResponse:
     return StreamingResponse(buf, media_type="image/png")
 
 
+@app.get("/api/plot/{name}")
+def get_cached_plot(name: str):
+    # Only allow hex32.png filenames for safety
+    if not name.endswith('.png') or len(name) != 36:
+        raise HTTPException(400, detail="Invalid plot name")
+    if any(c not in '0123456789abcdef.' for c in name):
+        raise HTTPException(400, detail="Invalid plot name")
+    path = PLOT_CACHE / name
+    if not path.exists():
+        raise HTTPException(404, detail="Plot not found")
+    return StreamingResponse(path.open('rb'), media_type='image/png')
+
+
 @app.get("/api/seasons/latest")
 def latest_season():
     try:
@@ -453,6 +466,25 @@ def simulate(req: SimulateRequest) -> dict[str, Any]:
         lap_traces = _lap_traces(mc_df, deg_model, pit_loss, n=3)
         undercut_heatmap = _undercut_heatmap(mc_df)
         backtest = _backtest(laps_raw, req.driver, mc_df, deg_model, pit_loss)
+
+        # Generate and cache backtest plot PNG and expose a URL in response
+        try:
+            if backtest and isinstance(backtest, dict):
+                a = backtest.get("actual") or {}
+                o = backtest.get("optimal") or {}
+                key = _make_key({"type": "backtest", "a": _make_key(a), "o": _make_key(o)})
+                p = PLOT_CACHE / f"{key}.png"
+                if not p.exists():
+                    try:
+                        fig = plot_lap_trace([a, o], labels=[a.get("label", "Actual"), o.get("label", "AI Optimal")], save=False)
+                        if fig is not None:
+                            fig.savefig(str(p), format="png", dpi=150, bbox_inches="tight")
+                    except Exception:
+                        traceback.print_exc()
+                backtest_plot_url = f"/api/plot/{key}.png"
+                backtest["plot_url"] = backtest_plot_url
+        except Exception:
+            traceback.print_exc()
 
         # Rival full timelines
         rival_result: dict[str, Any] = {

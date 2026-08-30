@@ -42,7 +42,7 @@ outputs/*.png
 outputs/*.pdf
 outputs/*.csv
 outputs/*.html
-
+outputs/plot_cache
 # ── Jupyter ───────────────────────────────────────────────────────────────────
 .ipynb_checkpoints/
 *.ipynb

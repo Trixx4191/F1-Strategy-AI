@@ -1085,11 +1085,21 @@ function BacktestTab({ backtest, driver }: any) {
     async function load() {
       setLoading(true);
       try {
-        const res = await api.backtestPlot({ backtest });
-        if (res && res.ok) {
-          const blob = await res.blob();
-          const url = URL.createObjectURL(blob);
-          if (mounted) setImgUrl(url);
+        if (backtest.plot_url) {
+          const urlFetch = backtest.plot_url;
+          const res = await fetch(urlFetch);
+          if (res && res.ok) {
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            if (mounted) setImgUrl(url);
+          }
+        } else {
+          const res = await api.backtestPlot({ backtest });
+          if (res && res.ok) {
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            if (mounted) setImgUrl(url);
+          }
         }
       } catch (e) {
         console.error(e);
