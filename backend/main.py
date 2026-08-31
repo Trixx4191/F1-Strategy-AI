@@ -4,6 +4,17 @@ F1 Strategy AI — FastAPI backend (full feature parity with dashboard.py).
 
 from __future__ import annotations
 
+# matplotlib.use("Agg") MUST run before any other import touches matplotlib
+# (several src.visualisation modules import pyplot at module load time).
+# Without this, matplotlib auto-detects a backend on first use — on a
+# server with no display this usually resolves to Agg anyway, but the
+# auto-detection probes for GUI toolkits (Qt/Tk) first, which is slower
+# and non-deterministic across deployment environments. Setting it
+# explicitly, first, makes backend startup faster and consistent.
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 import sys
 import traceback
 from pathlib import Path
@@ -61,6 +72,14 @@ class SimulateRequest(BaseModel):
     noise_std: float = Field(default=0.3, ge=0.0, le=2.0)
     use_live_temp: bool = True
     track_temp_override: Optional[float] = None
+    # Optional: when the frontend already has a /api/simulate response in
+    # memory (the normal case — a user runs a simulation, looks at the
+    # dashboard, then clicks "export CSV"), it can pass that response's
+    # `strategies` array straight through here. This lets /api/simulate/csv
+    # skip session loading, model fitting, and a full Monte Carlo re-run
+    # entirely — previously every CSV export re-ran the whole pipeline
+    # from scratch just to re-derive a table it already had.
+    precomputed_strategies: Optional[list[dict]] = None
 
 
 @app.get("/api/health")
@@ -352,6 +371,50 @@ def _backtest(laps_raw: pd.DataFrame, driver: str, mc_df: pd.DataFrame,
         return None
 
 
+def _pick_fitted_compound(deg_model: TyreDegModel, preferred: str) -> str | None:
+    """
+    Return `preferred` if TyreDegModel actually fitted a curve for it,
+    otherwise fall back to whichever compound the model DID fit (arbitrary
+    but deterministic — sorted order). Returns None only if the model has
+    no fitted compounds at all (should not happen in practice, but this
+    keeps the function total rather than raising).
+
+    Guards against calling deg_model.predict() on a compound the driver
+    never ran that race — e.g. a driver who ran SOFT/HARD only has no
+    MEDIUM curve, so blindly defaulting to "MEDIUM" (as several call sites
+    previously did) raises ValueError deep inside the rival/undercut scan,
+    silently swallowed by a broad try/except and surfacing as the rival
+    engine mysteriously returning all-None results.
+    """
+    fitted = sorted(deg_model.models.keys())
+    if not fitted:
+        return None
+    p = str(preferred).upper()
+    return p if p in fitted else fitted[0]
+
+
+def _pick_switch_compound(deg_model: TyreDegModel, current: str, preferred_new: str | None = None) -> str | None:
+    """
+    Return a fitted compound different from `current`, for undercut/overcut
+    scans that model switching tyres. Tries `preferred_new` first if given
+    and fitted; otherwise picks any other fitted compound. Returns None if
+    fewer than 2 compounds were fitted this session (no valid switch
+    exists — e.g. a driver who ran only one compound all race) so callers
+    can skip the switch-dependent analysis rather than crash or fabricate
+    a result from an unfitted curve.
+    """
+    fitted = sorted(deg_model.models.keys())
+    current_u = str(current).upper()
+    others = [c for c in fitted if c != current_u]
+    if not others:
+        return None
+    if preferred_new:
+        p = str(preferred_new).upper()
+        if p in others:
+            return p
+    return others[0]
+
+
 def _scan_to_list(df: pd.DataFrame) -> list[dict]:
     if df is None or df.empty:
         return []
@@ -371,6 +434,10 @@ def _scan_to_list(df: pd.DataFrame) -> list[dict]:
 
 @app.post("/api/simulate")
 def simulate(req: SimulateRequest) -> dict[str, Any]:
+    # Session/data loading gets its own try block so a FastF1 upstream
+    # failure (no data for this race, network issue) reports as 502 —
+    # matching /api/session — rather than collapsing into the same 500
+    # used below for a genuine bug in our own simulation/transform code.
     try:
         session = load_session(req.year, req.race)
         laps_raw = get_laps(session)
@@ -380,7 +447,10 @@ def simulate(req: SimulateRequest) -> dict[str, Any]:
         circuit = get_circuit_outline(session)
         weather = get_track_temp(session)
         drivers = get_driver_entry_list(session)
+    except Exception as e:
+        raise HTTPException(502, detail=f"Failed to load session {req.year} {req.race}: {e}")
 
+    try:
         track_temp = None
         if req.use_live_temp and weather:
             track_temp = weather.get("track_temp")
@@ -472,13 +542,14 @@ def simulate(req: SimulateRequest) -> dict[str, Any]:
             if backtest and isinstance(backtest, dict):
                 a = backtest.get("actual") or {}
                 o = backtest.get("optimal") or {}
-                key = _make_key({"type": "backtest", "a": _make_key(a), "o": _make_key(o)})
+                key = _make_key({"type": "backtest", "a": a, "o": o})
                 p = PLOT_CACHE / f"{key}.png"
                 if not p.exists():
                     try:
                         fig = plot_lap_trace([a, o], labels=[a.get("label", "Actual"), o.get("label", "AI Optimal")], save=False)
                         if fig is not None:
                             fig.savefig(str(p), format="png", dpi=150, bbox_inches="tight")
+                            plt.close(fig)
                     except Exception:
                         traceback.print_exc()
                 backtest_plot_url = f"/api/plot/{key}.png"
@@ -498,9 +569,9 @@ def simulate(req: SimulateRequest) -> dict[str, Any]:
         try:
             our_row = next((r for r in timing if r.get("driver") == req.driver), None)
             riv_row = next((r for r in timing if r.get("driver") == req.rival), None)
-            our_compound = (our_row or {}).get("compound") or "MEDIUM"
+            our_compound_raw = (our_row or {}).get("compound") or "MEDIUM"
             our_age = int((our_row or {}).get("tyre_age") or 8)
-            riv_compound = (riv_row or {}).get("compound") or "MEDIUM"
+            riv_compound_raw = (riv_row or {}).get("compound") or "MEDIUM"
             riv_age = int((riv_row or {}).get("tyre_age") or 10)
             our_gap = (our_row or {}).get("gap")
             riv_gap = (riv_row or {}).get("gap")
@@ -508,6 +579,27 @@ def simulate(req: SimulateRequest) -> dict[str, Any]:
                 float(riv_gap) - float(our_gap)
                 if our_gap is not None and riv_gap is not None else 2.5
             )
+
+            # Only use compounds the deg model actually fitted this
+            # session — e.g. a driver who ran SOFT/HARD only has no MEDIUM
+            # curve, and blindly defaulting to "MEDIUM" here previously
+            # crashed deg_model.predict() deep inside the scan functions,
+            # silently caught by the try/except below and surfacing as the
+            # rival engine mysteriously returning all-None results.
+            our_compound = _pick_fitted_compound(deg_model, our_compound_raw)
+            riv_compound = _pick_fitted_compound(deg_model, riv_compound_raw) or our_compound
+            new_compound = _pick_switch_compound(deg_model, our_compound) if our_compound else None
+
+            if our_compound is None or new_compound is None:
+                # Not enough compound diversity fitted this session to
+                # model a tyre switch — leave rival_result at its default
+                # (all-None) rather than raise. This is an honest "not
+                # enough data" state, not a bug.
+                raise RuntimeError(
+                    "Insufficient fitted compounds for undercut/overcut analysis "
+                    f"(driver ran: {sorted(deg_model.models.keys())})"
+                )
+
             rival_state = RivalState(
                 driver=req.rival,
                 compound=str(riv_compound).upper(),
@@ -516,7 +608,6 @@ def simulate(req: SimulateRequest) -> dict[str, Any]:
             )
             from_lap = max(8, race_laps // 4)
             to_lap = min(race_laps - 8, race_laps // 2 + 5)
-            new_compound = "SOFT" if str(our_compound).upper() != "SOFT" else "MEDIUM"
             n_riv = min(150, req.n_simulations)
             under_df = scan_undercut_window(
                 from_lap=from_lap, to_lap=to_lap,
@@ -589,12 +680,22 @@ def simulate(req: SimulateRequest) -> dict[str, Any]:
 
 @app.post("/api/simulate/csv")
 def simulate_csv(req: SimulateRequest):
-    """Run the simulation and return strategies as a CSV attachment."""
-    try:
-        # Reuse simulate logic to produce the same payload
-        result = simulate(req)
+    """Return strategies as a CSV attachment.
 
-        strategies = result.get("strategies") or []
+    If req.precomputed_strategies is provided, uses it directly — this is
+    the fast, expected path (frontend already ran /api/simulate to render
+    the dashboard, then the user clicked export). Falls back to a full
+    simulate(req) re-run only when no precomputed data is supplied, so
+    the endpoint still works standalone (e.g. direct API testing) without
+    silently breaking.
+    """
+    try:
+        if req.precomputed_strategies is not None:
+            strategies = req.precomputed_strategies
+        else:
+            result = simulate(req)
+            strategies = result.get("strategies") or []
+
         # Build CSV in-memory
         buf = io.StringIO()
         writer = csv.writer(buf)
@@ -644,7 +745,7 @@ def undercut_plot(body: dict):
             # Ensure 'compounds' column exists for legacy plotting
             if "compounds" not in df.columns and "compound_sequence" in df.columns:
                 df["compounds"] = df["compound_sequence"].apply(lambda s: "→".join(s) if isinstance(s, (list, tuple)) else (s or ""))
-            key = _make_key({"type": "undercut", "race_laps": int(race_laps) if race_laps else 0, "mc_hash": _make_key(mc_results)})
+            key = _make_key({"type": "undercut", "race_laps": int(race_laps) if race_laps else 0, "mc": mc_results})
             p = PLOT_CACHE / f"{key}.png"
             if p.exists():
                 return StreamingResponse(p.open("rb"), media_type="image/png")
@@ -697,6 +798,7 @@ def undercut_plot(body: dict):
             raise HTTPException(404, detail="No 1-stop strategies to plot")
         buf = io.BytesIO()
         fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
         buf.seek(0)
         return _cached_png_response(key, buf)
     except HTTPException:
@@ -719,7 +821,7 @@ def rival_compare_plot(body: dict):
             raise HTTPException(400, detail="Both undercut_scan and overcut_scan required")
 
         # cache key
-        key = _make_key({"type": "compare", "u": _make_key(u_scan), "o": _make_key(o_scan), "rival": body.get("rival"), "driver": body.get("driver")})
+        key = _make_key({"type": "compare", "u": u_scan, "o": o_scan, "rival": body.get("rival"), "driver": body.get("driver")})
         p = PLOT_CACHE / f"{key}.png"
         if p.exists():
             return StreamingResponse(p.open("rb"), media_type="image/png")
@@ -732,6 +834,7 @@ def rival_compare_plot(body: dict):
             raise HTTPException(404, detail="Failed to generate comparison plot")
         buf = io.BytesIO()
         fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
         buf.seek(0)
         return _cached_png_response(key, buf)
     except HTTPException:
@@ -755,7 +858,7 @@ def overcut_plot(body: dict):
 
         if over_scan:
             o_df = pd.DataFrame(over_scan)
-            key = _make_key({"type": "overcut", "o": _make_key(over_scan), "rival": rival_driver, "driver": our_driver})
+            key = _make_key({"type": "overcut", "o": over_scan, "rival": rival_driver, "driver": our_driver})
             p = PLOT_CACHE / f"{key}.png"
             if p.exists():
                 return StreamingResponse(p.open("rb"), media_type="image/png")
@@ -784,9 +887,9 @@ def overcut_plot(body: dict):
 
             our_row = next((r for r in get_timing_tower_data(session) if r.get("driver") == driver), None)
             riv_row = next((r for r in get_timing_tower_data(session) if r.get("driver") == body.get("rival")), None)
-            our_compound = (our_row or {}).get("compound") or "MEDIUM"
+            our_compound_raw = (our_row or {}).get("compound") or "MEDIUM"
             our_age = int((our_row or {}).get("tyre_age") or 8)
-            riv_compound = (riv_row or {}).get("compound") or "MEDIUM"
+            riv_compound_raw = (riv_row or {}).get("compound") or "MEDIUM"
             riv_age = int((riv_row or {}).get("tyre_age") or 10)
             our_gap = (our_row or {}).get("gap")
             riv_gap = (riv_row or {}).get("gap")
@@ -794,6 +897,19 @@ def overcut_plot(body: dict):
                 float(riv_gap) - float(our_gap)
                 if our_gap is not None and riv_gap is not None else 2.5
             )
+            # Same fitted-compound guard as /api/simulate — see
+            # _pick_fitted_compound/_pick_switch_compound docstrings.
+            our_compound = _pick_fitted_compound(deg_model, our_compound_raw)
+            riv_compound = _pick_fitted_compound(deg_model, riv_compound_raw) or our_compound
+            if our_compound is None:
+                raise HTTPException(422, detail="No fitted tyre compounds for this driver/session.")
+            new_compound = _pick_switch_compound(deg_model, our_compound, body.get("new_compound"))
+            if new_compound is None:
+                raise HTTPException(
+                    422,
+                    detail=f"Not enough compound diversity to model a switch "
+                            f"(driver ran: {sorted(deg_model.models.keys())}).",
+                )
             rival_state = RivalState(
                 driver=body.get("rival", "RIVAL"),
                 compound=str(riv_compound).upper(),
@@ -806,7 +922,7 @@ def overcut_plot(body: dict):
                 from_lap=from_lap, to_lap=to_lap,
                 our_compound=str(our_compound).upper(),
                 our_tyre_age_at_from_lap=max(1, our_age),
-                new_compound=body.get("new_compound", "SOFT"),
+                new_compound=new_compound,
                 rival=rival_state, deg_model=deg_model, pit_loss=pit_loss,
                 n_simulations=min(150, n_simulations), noise_std=noise_std,
             )
@@ -827,6 +943,7 @@ def overcut_plot(body: dict):
         fig = plot_undercut_ev_timeline(o_df, rival_driver, our_driver, mode_label="OVERCUT", save=False)
         buf = io.BytesIO()
         fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
         buf.seek(0)
         return _cached_png_response(key, buf)
     except HTTPException:
@@ -855,7 +972,7 @@ def backtest_plot(body: dict):
         labels = [actual.get("label", "Actual"), optimal.get("label", "AI Optimal")]
 
         # cache key
-        key = _make_key({"type": "backtest", "a": _make_key(actual), "o": _make_key(optimal)})
+        key = _make_key({"type": "backtest", "a": actual, "o": optimal})
         p = PLOT_CACHE / f"{key}.png"
         if p.exists():
             return StreamingResponse(p.open("rb"), media_type="image/png")
@@ -863,6 +980,7 @@ def backtest_plot(body: dict):
         fig = plot_lap_trace(strategies, labels=labels, save=False)
         buf = io.BytesIO()
         fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
         buf.seek(0)
         return _cached_png_response(key, buf)
     except HTTPException:
@@ -894,12 +1012,18 @@ class RivalAnalysisRequest(BaseModel):
 @app.post("/api/rival-analysis")
 def rival_analysis(req: RivalAnalysisRequest) -> dict[str, Any]:
     """Interactive rival scan + optional head-to-head MC (full dashboard Tab 5)."""
+    # Same split as /api/simulate: upstream data-load failures are 502,
+    # genuine bugs in the analysis logic below are 500.
     try:
         session = load_session(req.year, req.race)
         laps_raw = get_laps(session)
         pit_stops = get_pit_stops(session)
         race_laps = get_race_laps(session) or 57
         weather = get_track_temp(session)
+    except Exception as e:
+        raise HTTPException(502, detail=f"Failed to load session {req.year} {req.race}: {e}")
+
+    try:
         track_temp = weather.get("track_temp") if weather else None
 
         cleaned = clean_laps(laps_raw)
@@ -909,6 +1033,22 @@ def rival_analysis(req: RivalAnalysisRequest) -> dict[str, Any]:
         if track_temp is not None:
             deg_model.set_track_temp(float(track_temp))
         pit_loss = get_pit_loss(pit_stops)
+
+        # our_compound/new_compound are explicit user choices here (unlike
+        # /api/simulate's auto-inferred rival block) — silently substituting
+        # a different compound behind the user's back would be confusing.
+        # Validate up front and report exactly what's available instead.
+        fitted = sorted(deg_model.models.keys())
+        requested = {req.our_compound.upper(), req.new_compound.upper()}
+        missing = requested - set(fitted)
+        if missing:
+            raise HTTPException(
+                422,
+                detail=(
+                    f"{req.driver} has no fitted tyre model for: {sorted(missing)}. "
+                    f"Compounds available this session: {fitted}."
+                ),
+            )
 
         from_lap = max(1, min(req.scan_from_lap, race_laps - 5))
         to_lap = max(from_lap + 1, min(req.scan_to_lap, race_laps - 2))
@@ -962,7 +1102,12 @@ def rival_analysis(req: RivalAnalysisRequest) -> dict[str, Any]:
                 rival_remaining = race_laps - from_lap
                 rival_on_current = min(rival_remaining, max(5, rival_remaining // 2))
                 if rival_remaining > 10:
-                    alt = "HARD" if req.rival_compound.upper() != "HARD" else "MEDIUM"
+                    # Same fitted-compound guard as elsewhere — deg_model
+                    # was fit for req.driver, used here as a pace proxy for
+                    # the rival's continuation strategy, so it must only
+                    # reference compounds that driver actually ran.
+                    alt = _pick_switch_compound(deg_model, req.rival_compound.upper()) \
+                        or req.rival_compound.upper()
                     rival_strat = Strategy(stints=[
                         Stint(req.rival_compound.upper(), rival_on_current),
                         Stint(alt, max(1, rival_remaining - rival_on_current)),
@@ -1002,6 +1147,14 @@ def rival_analysis(req: RivalAnalysisRequest) -> dict[str, Any]:
             "pit_loss": pit_loss,
             "race_laps": race_laps,
         }
+    except HTTPException:
+        # Without this, the bare `except Exception` below would catch our
+        # own intentional HTTPException(422, ...) raised above (it IS an
+        # Exception subclass) and re-wrap it as a generic 500 — turning a
+        # clear, actionable "MEDIUM isn't fitted for this driver" message
+        # into an opaque server-error page. Every other endpoint in this
+        # file already guards against this; this one was missing it.
+        raise
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(500, detail=f"Rival analysis failed: {e}")

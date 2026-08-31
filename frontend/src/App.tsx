@@ -401,6 +401,7 @@ export default function App() {
               year={year}
               race={race}
               driver={driver}
+              rival={rival}
               nSims={nSims}
               strategyType={strategyType}
               noise={noise}
@@ -452,6 +453,12 @@ export default function App() {
                     year, race, driver, rival,
                     n_simulations: nSims, strategy_type: strategyType,
                     noise_std: noise, use_live_temp: useLiveTemp,
+                    // Strategies are already computed and sitting in state
+                    // from the initial simulate() call that rendered this
+                    // tab — passing them through lets the backend skip a
+                    // full session-reload + Monte Carlo re-run just to
+                    // regenerate a CSV of data it already sent us once.
+                    precomputed_strategies: strategies,
                     ...(useLiveTemp ? {} : { track_temp_override: manualTemp }),
                   } as any);
                   if (!res.ok) throw new Error(res.statusText || "CSV request failed");
@@ -765,7 +772,7 @@ function TyresTab({ curves, scatter, phaseSlopes, summary, tyreSummary }: any) {
   );
 }
 
-function UndercutTab({ cells, strategies, raceLaps, year, race, driver, nSims, strategyType, noise, useLiveTemp, manualTemp }: any) {
+function UndercutTab({ cells, strategies, raceLaps, year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp }: any) {
   const [imgUrlLeft, setImgUrlLeft] = useState<string | null>(null);
   const [imgUrlRight, setImgUrlRight] = useState<string | null>(null);
   const [imgUrlCompare, setImgUrlCompare] = useState<string | null>(null);
@@ -780,7 +787,7 @@ function UndercutTab({ cells, strategies, raceLaps, year, race, driver, nSims, s
           year: year || 2024,
           race: race || "",
           driver: driver || "VER",
-          rival: "",
+          rival: rival || "NOR",
           n_simulations: nSims || 200,
           strategy_type: strategyType || "Both",
           noise_std: noise || 0.3,
@@ -802,7 +809,7 @@ function UndercutTab({ cells, strategies, raceLaps, year, race, driver, nSims, s
         // Also request rival scan to build compare plot — prefer cached sim rival data
         let rScan: RivalAnalysisResult | null = null;
         try {
-          rScan = await api.rivalAnalysis({ year, race, driver, rival: "", rival_compound: "MEDIUM", rival_tyre_age: 10, gap_to_rival: 2.0, scan_from_lap: Math.max(8, Math.floor((raceLaps||57)/4)), scan_to_lap: Math.min((raceLaps||57)-8, Math.floor((raceLaps||57)/2)+5), our_compound: "MEDIUM", our_tyre_age: 10, new_compound: "SOFT", n_simulations: Math.min(150, Math.max(50, Math.floor(nSims/3))), noise_std: noise, run_h2h: false });
+          rScan = await api.rivalAnalysis({ year, race, driver, rival: rival || "NOR", rival_compound: "MEDIUM", rival_tyre_age: 10, gap_to_rival: 2.0, scan_from_lap: Math.max(8, Math.floor((raceLaps||57)/4)), scan_to_lap: Math.min((raceLaps||57)-8, Math.floor((raceLaps||57)/2)+5), our_compound: "MEDIUM", our_tyre_age: 10, new_compound: "SOFT", n_simulations: Math.min(150, Math.max(50, Math.floor(nSims/3))), noise_std: noise, run_h2h: false });
         } catch (e) {
           rScan = null;
         }
@@ -821,7 +828,7 @@ function UndercutTab({ cells, strategies, raceLaps, year, race, driver, nSims, s
 
         // Fetch overcut image (prefer precomputed rival scan if available)
         try {
-          const oBody: any = { year, race, driver, rival: "", n_simulations: Math.min(150, Math.max(50, Math.floor(nSims/3))), noise_std: noise };
+          const oBody: any = { year, race, driver, rival: rival || "NOR", n_simulations: Math.min(150, Math.max(50, Math.floor(nSims/3))), noise_std: noise };
           if (rScan && rScan.overcut_timeline) oBody.overcut_timeline = rScan.overcut_timeline;
           const oRes = await api.overcutPlot(oBody);
           if (oRes && oRes.ok) {
@@ -836,7 +843,7 @@ function UndercutTab({ cells, strategies, raceLaps, year, race, driver, nSims, s
         // If we have scan data, request compare plot (undercut vs overcut) and show below
         if (rScan && rScan.undercut_timeline && rScan.overcut_timeline) {
           try {
-            const cmpRes = await api.rivalComparePlot({ undercut_scan: rScan.undercut_timeline, overcut_scan: rScan.overcut_timeline, rival: rScan.rival, driver });
+            const cmpRes = await api.rivalComparePlot({ undercut_scan: rScan.undercut_timeline, overcut_scan: rScan.overcut_timeline, rival: rival || "NOR", driver });
             if (cmpRes.ok) {
               const b2 = await cmpRes.blob();
               const url2 = URL.createObjectURL(b2);
@@ -852,7 +859,11 @@ function UndercutTab({ cells, strategies, raceLaps, year, race, driver, nSims, s
     }
     load();
     return () => { mounted = false; if (imgUrlLeft) URL.revokeObjectURL(imgUrlLeft); if (imgUrlRight) URL.revokeObjectURL(imgUrlRight); if (imgUrlCompare) URL.revokeObjectURL(imgUrlCompare); };
-  }, []);
+    // Deliberately re-fetch whenever any input that affects the plots
+    // changes — the previous empty dependency array meant switching race,
+    // driver, or rival after this tab first loaded left stale PNGs on
+    // screen from whatever combination was active on mount.
+  }, [year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp]);
 
   return (
     <div className="detail-grid">
@@ -1053,34 +1064,20 @@ function RivalTab(props: any) {
 }
 
 function BacktestTab({ backtest, driver }: any) {
-  if (!backtest) {
-    return (
-      <div className="panel">
-        <div className="panel-header"><span className="title">Backtest</span></div>
-        <div className="panel-body">
-          <div className="muted">Run simulation to compare AI optimal vs actual {driver} strategy. Requires stint data in the session.</div>
-        </div>
-      </div>
-    );
-  }
-  const traces = [
-    {
-      name: backtest.actual.label,
-      color: "#4c9be8",
-      points: backtest.actual.lap_times.map((lt: number, i: number) => ({ x: i + 1, y: lt })),
-    },
-    {
-      name: backtest.optimal.label,
-      color: "#e8002d",
-      points: backtest.optimal.lap_times.map((lt: number, i: number) => ({ x: i + 1, y: lt })),
-    },
-  ];
-  const d = backtest.delta_seconds;
-  const dColor = d > 0.5 ? "#e8002d" : d < -0.5 ? "#39b54a" : "#ffd700";
+  // useState/useEffect must run unconditionally on every render — they
+  // were previously declared AFTER the `if (!backtest) return ...` early
+  // exit below, which is a React Rules of Hooks violation: this component
+  // calls zero hooks on the first render (before a simulation has run,
+  // when backtest is null) and then calls two hooks once backtest becomes
+  // populated. React detects this hook-count mismatch between renders and
+  // throws ("Rendered fewer hooks than expected") the first time a user
+  // actually runs a simulation and opens this tab. Fixed by declaring the
+  // hooks first and guarding their *internal* logic on backtest instead.
   const [imgUrl, setImgUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    if (!backtest) return;
     let mounted = true;
     async function load() {
       setLoading(true);
@@ -1110,6 +1107,31 @@ function BacktestTab({ backtest, driver }: any) {
     load();
     return () => { mounted = false; if (imgUrl) URL.revokeObjectURL(imgUrl); };
   }, [backtest]);
+
+  if (!backtest) {
+    return (
+      <div className="panel">
+        <div className="panel-header"><span className="title">Backtest</span></div>
+        <div className="panel-body">
+          <div className="muted">Run simulation to compare AI optimal vs actual {driver} strategy. Requires stint data in the session.</div>
+        </div>
+      </div>
+    );
+  }
+  const traces = [
+    {
+      name: backtest.actual.label,
+      color: "#4c9be8",
+      points: backtest.actual.lap_times.map((lt: number, i: number) => ({ x: i + 1, y: lt })),
+    },
+    {
+      name: backtest.optimal.label,
+      color: "#e8002d",
+      points: backtest.optimal.lap_times.map((lt: number, i: number) => ({ x: i + 1, y: lt })),
+    },
+  ];
+  const d = backtest.delta_seconds;
+  const dColor = d > 0.5 ? "#e8002d" : d < -0.5 ? "#39b54a" : "#ffd700";
   return (
     <div className="detail-grid">
       <div className="panel span-full">
