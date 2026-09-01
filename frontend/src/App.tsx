@@ -167,8 +167,6 @@ export default function App() {
         noise_std: noise, use_live_temp: useLiveTemp,
         ...(useLiveTemp ? {} : { track_temp_override: manualTemp }),
       } as any);
-      // expose sim payload globally so other tabs can reuse it without re-running
-      try { (window as any).__SIMULATION_PAYLOAD = result.strategies; (window as any).sim = result; } catch {}
       setSim(result);
       setSession({
         year: result.year, race: result.race, race_laps: result.race_laps,
@@ -768,6 +766,34 @@ function TyresTab({ curves, scatter, phaseSlopes, summary, tyreSummary }: any) {
           </table>
         </div>
       </div>
+      <div className="panel span-full">
+        <div className="panel-header"><span className="title">Model Summary</span></div>
+        <div className="panel-body" style={{ overflowX: "auto" }}>
+          {/* This table was previously fetched from the backend (the
+              `summary` prop, i.e. model_summary from /api/simulate) but
+              never rendered anywhere — a real gap versus dashboard.py's
+              "Model Summary" table, found during the final parity audit
+              before retiring dashboard.py. */}
+          {!summary || !summary.length ? <div className="muted">Run simulation first</div> : (
+            <table className="data-table">
+              <thead>
+                <tr>
+                  {Object.keys(summary[0]).map((k) => <th key={k}>{k}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {summary.map((row: any, i: number) => (
+                  <tr key={i}>
+                    {Object.keys(summary[0]).map((k) => (
+                      <td key={k}>{row[k] === null || row[k] === undefined ? "—" : String(row[k])}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -793,14 +819,27 @@ function UndercutTab({ cells, strategies, raceLaps, year, race, driver, rival, n
           noise_std: noise || 0.3,
           use_live_temp: useLiveTemp ?? true,
           track_temp_override: useLiveTemp ? undefined : manualTemp,
+          // race_laps was previously missing entirely, so even when the
+          // fast path below was taken the backend received race_laps=0
+          // and generated the heatmap with a meaningless lap range.
+          race_laps: raceLaps || 0,
         };
-        // If we already have a simulation result in memory, pass it to avoid rerunning MC
-        if ((window as any).__SIMULATION_PAYLOAD) {
-          body.mc_results = (window as any).__SIMULATION_PAYLOAD;
-        }
-        // Frontend also has sim in state — prefer that
-        if ((window as any).__SIMULATION_PAYLOAD == null && (window as any).sim) {
-          body.mc_results = (window as any).sim.strategies;
+        // Use the strategies this component already received as a prop —
+        // this is the same data /api/simulate returned for the CURRENT
+        // year/race/driver/rival selection. The previous implementation
+        // read from (window as any).__SIMULATION_PAYLOAD / .sim instead:
+        // functionally similar in the common case, but it opens a real
+        // staleness window — if this effect re-fires (e.g. the user
+        // changed race) before a fresh /api/simulate call finishes, the
+        // global could still hold the PREVIOUS race's strategies, and
+        // nothing here would catch the mismatch — the backend has no way
+        // to know mc_results doesn't correspond to the year/race also in
+        // this same request body, so it would silently render the wrong
+        // race's heatmap. Using the prop ties this directly to the same
+        // render pass, and it's also just proper React data flow instead
+        // of global mutable state smuggled through `window`.
+        if (strategies && strategies.length) {
+          body.mc_results = strategies;
         }
         // As a stronger default, try reading the global `sim` injected by the app
         // (we'll set it below when simulation completes)
