@@ -23,6 +23,7 @@ their EV values and recommendations need validation before direct comparison.
 | Degradation curves + experimental cliff interval | Tyre Model tab ← `tyre_curves` |
 | Stint scatter | Tyre Model tab ← `stint_scatter` |
 | Phase slopes table | Tyre Model tab ← `phase_slopes` |
+| Model summary table (baseline, deg rates, in-sample MAE) | Tyre Model tab ← `model_summary` |
 | Strategy comparison bar chart | Strategy tab ← ranked `strategies` |
 | Lap trace (top 3) | Strategy tab ← `lap_traces` |
 | 1-stop vs 2-stop comparison | Strategy tab ← `stop_comparison` |

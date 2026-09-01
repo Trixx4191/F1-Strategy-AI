@@ -21,8 +21,9 @@ PYTHONPATH=$(pwd) uvicorn backend.main:app --reload --port 8000
 cd frontend && npm install && npm run dev
 ```
 
-See `docs/frontend_react.md`.  
-`src/visualisation/dashboard.py` and `dashboard_mc.py` are legacy Streamlit entry points.
+See [`docs/frontend_react.md`](docs/frontend_react.md).
+The original Streamlit dashboard remains at `src/visualisation/dashboard.py`.
+`dashboard_mc.py` provides a lightweight local interface.
 
 
 F1 race strategy is a real-time optimisation problem under uncertainty: noisy tyre degradation, an opponent whose next move you don't control, and thousands of possible strategy combinations, all under a hard time budget.
@@ -84,7 +85,7 @@ f1-strategy-ai/
 │   │   ├── monte_carlo.py   # Vectorised MC engine (NumPy matrix ops)
 │   │   └── rival.py         # Undercut / overcut EV scanning, H2H Monte Carlo
 │   ├── visualisation/
-│   │   ├── dashboard.py     # Streamlit app (main entry point)
+│   │   ├── dashboard_mc.py  # Streamlit "Mission Control" app (quick local option)
 │   │   ├── tyre_plots.py    # Piecewise degradation curves, cliff markers
 │   │   ├── strategy_plots.py  # Comparison bars, lap traces, undercut heatmap
 │   │   └── rival_plots.py   # Undercut/overcut EV timeline, H2H, comparison chart
@@ -182,8 +183,15 @@ pip install -r requirements.txt
 
 ### Run the dashboard
 
+**Primary interface** (React + FastAPI — see setup above):
 ```bash
-PYTHONPATH=$(pwd) streamlit run src/visualisation/dashboard.py
+PYTHONPATH=$(pwd) uvicorn backend.main:app --reload --port 8000
+cd frontend && npm install && npm run dev
+```
+
+**Quick local option, no build step** (Streamlit "Mission Control"):
+```bash
+PYTHONPATH=$(pwd) streamlit run src/visualisation/dashboard_mc.py
 ```
 
 Open `http://localhost:8501` — select a season, race, and driver in the sidebar, then hit **RUN SIMULATION**. The local application lists available completed sessions.
