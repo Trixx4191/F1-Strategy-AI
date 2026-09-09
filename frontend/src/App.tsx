@@ -1,5 +1,5 @@
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   type SessionData,
@@ -440,7 +440,7 @@ export default function App() {
               }}
             />
           )}
-          {tab === "backtest" && <BacktestTab backtest={sim?.backtest ?? null} driver={driver} />}
+          {tab === "backtest" && <BacktestTab backtest={sim?.backtest ?? null} driver={driver} circuit={circuit} race={race} />}
           {tab === "results" && (
             <ResultsTab
               strategies={strategies}
@@ -1102,7 +1102,7 @@ function RivalTab(props: any) {
   );
 }
 
-function BacktestTab({ backtest, driver }: any) {
+function BacktestTab({ backtest, driver, circuit, race }: any) {
   // useState/useEffect must run unconditionally on every render — they
   // were previously declared AFTER the `if (!backtest) return ...` early
   // exit below, which is a React Rules of Hooks violation: this component
@@ -1196,6 +1196,206 @@ function BacktestTab({ backtest, driver }: any) {
           {loading ? <div className="muted">Generating backtest plot…</div> : (
             imgUrl ? <img src={imgUrl} alt="Backtest lap trace" style={{ width: "100%" }} /> : <LineChart series={traces} xLabel="Lap" yLabel="Lap time (s)" height={260} />
           )}
+        </div>
+      </div>
+      <BacktestReplay backtest={backtest} circuit={circuit} race={race} />
+    </div>
+  );
+}
+
+// Given a closed polyline (the real circuit outline from get_circuit_outline
+// — normalized 0-1 x/y points) and a 0-1 progress fraction around the lap,
+// returns the interpolated point along the track. Uses actual segment arc
+// length rather than naive index interpolation, since outline points are
+// not evenly spaced around the circuit.
+function interpolateAlongPath(points: { x: number; y: number }[], progress: number): { x: number; y: number } {
+  if (!points || points.length < 2) return { x: 0.5, y: 0.5 };
+  const n = points.length;
+  const dist: number[] = [0];
+  for (let i = 1; i <= n; i++) {
+    const a = points[(i - 1) % n];
+    const b = points[i % n];
+    dist.push(dist[i - 1] + Math.hypot(b.x - a.x, b.y - a.y));
+  }
+  const total = dist[n];
+  if (total <= 0) return points[0];
+  const p = ((progress % 1) + 1) % 1;
+  const target = p * total;
+  let lo = 0, hi = n;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (dist[mid] < target) lo = mid + 1; else hi = mid;
+  }
+  const idx = Math.max(1, lo);
+  const segStart = dist[idx - 1], segEnd = dist[idx];
+  const t = segEnd > segStart ? (target - segStart) / (segEnd - segStart) : 0;
+  const a = points[(idx - 1) % n], b = points[idx % n];
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+}
+
+// Given cumulative lap-completion times and the per-lap durations, find
+// which lap a given elapsed race time falls in and how far through that
+// lap the driver is (0-1) — this feeds interpolateAlongPath's progress arg.
+function lapProgressAt(cumTimes: number[], lapTimes: number[], t: number): { lap: number; progress: number } {
+  if (!lapTimes.length) return { lap: 0, progress: 0 };
+  let idx = 0;
+  while (idx < lapTimes.length && cumTimes[idx + 1] <= t) idx++;
+  if (idx >= lapTimes.length) return { lap: lapTimes.length, progress: 1 };
+  const lapStart = cumTimes[idx];
+  const lapDur = lapTimes[idx] || 1;
+  const progress = Math.min(1, Math.max(0, (t - lapStart) / lapDur));
+  return { lap: idx + 1, progress };
+}
+
+// Animated Actual-vs-AI-Optimal replay around the real circuit outline.
+// Built entirely from data the backtest already computes (per-lap times
+// for both strategies) — no new backend work, no telemetry fetching.
+// Cars advance uniformly around the known track shape based on elapsed
+// race time within the current lap; this is a strategy-comparison
+// visualization, not a frame-accurate telemetry replay (see docs/decisions.md
+// for the deliberate scope decision behind this vs full per-driver telemetry).
+function BacktestReplay({ backtest, circuit, race }: any) {
+  const actualLaps: number[] = backtest?.actual?.lap_times || [];
+  const optimalLaps: number[] = backtest?.optimal?.lap_times || [];
+  const points: { x: number; y: number }[] = circuit?.points || [];
+
+  const actualCum = useMemo(() => {
+    const out = [0];
+    for (const lt of actualLaps) out.push(out[out.length - 1] + lt);
+    return out;
+  }, [actualLaps]);
+  const optimalCum = useMemo(() => {
+    const out = [0];
+    for (const lt of optimalLaps) out.push(out[out.length - 1] + lt);
+    return out;
+  }, [optimalLaps]);
+
+  const totalDuration = Math.max(
+    actualCum[actualCum.length - 1] || 0,
+    optimalCum[optimalCum.length - 1] || 0,
+  );
+
+  const [elapsed, setElapsed] = useState(0);
+  const [playing, setPlaying] = useState(true);
+  const [speed, setSpeed] = useState(25); // race-seconds simulated per real second
+  const rafRef = useRef<number | null>(null);
+  const lastTsRef = useRef<number | null>(null);
+
+  // Reset and auto-play whenever a genuinely new backtest result arrives
+  // (a fresh simulation run) — not on every re-render.
+  useEffect(() => {
+    setElapsed(0);
+    setPlaying(true);
+    lastTsRef.current = null;
+  }, [backtest]);
+
+  useEffect(() => {
+    if (!playing || totalDuration <= 0) {
+      lastTsRef.current = null;
+      return;
+    }
+    function step(ts: number) {
+      if (lastTsRef.current == null) lastTsRef.current = ts;
+      const dt = (ts - lastTsRef.current) / 1000;
+      lastTsRef.current = ts;
+      setElapsed((prev) => {
+        const next = prev + dt * speed;
+        if (next >= totalDuration) {
+          setPlaying(false);
+          return totalDuration;
+        }
+        return next;
+      });
+      rafRef.current = requestAnimationFrame(step);
+    }
+    rafRef.current = requestAnimationFrame(step);
+    return () => { if (rafRef.current != null) cancelAnimationFrame(rafRef.current); };
+  }, [playing, speed, totalDuration]);
+
+  if (!points.length || !actualLaps.length || !optimalLaps.length) {
+    return (
+      <div className="panel span-full">
+        <div className="panel-header"><span className="title">Race Replay</span></div>
+        <div className="panel-body">
+          <div className="muted">
+            {!points.length
+              ? "Circuit geometry not available for this session — replay needs the real track outline."
+              : "Backtest lap data unavailable for this driver/session."}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const actualState = lapProgressAt(actualCum, actualLaps, elapsed);
+  const optimalState = lapProgressAt(optimalCum, optimalLaps, elapsed);
+  const actualPos = interpolateAlongPath(points, actualState.progress);
+  const optimalPos = interpolateAlongPath(points, optimalState.progress);
+
+  const pathD = `M ${points[0].x * 100} ${points[0].y * 100} ` +
+    points.slice(1).map((p) => `L ${p.x * 100} ${p.y * 100}`).join(" ") + " Z";
+
+  return (
+    <div className="panel span-full">
+      <div className="panel-header">
+        <span className="title">Race Replay</span>
+        <span>{race} — Actual vs AI Optimal</span>
+      </div>
+      <div className="panel-body no-pad">
+        <div style={{ position: "relative", width: "100%", background: "radial-gradient(ellipse at center, #0d0d0d 0%, #000 100%)" }}>
+          <svg viewBox="0 0 100 100" style={{ width: "100%", display: "block" }}>
+            <path d={pathD} fill="none" stroke="#1a1a1a" strokeWidth="6" strokeLinejoin="round" strokeLinecap="round" />
+            <path d={pathD} fill="none" stroke="#2c2c2c" strokeWidth="3.4" strokeLinejoin="round" strokeLinecap="round" />
+            <path d={pathD} fill="none" stroke="#484848" strokeWidth="1" strokeLinejoin="round" strokeLinecap="round" />
+            <circle cx={actualPos.x * 100} cy={actualPos.y * 100} r={2.4} fill="#4c9be8" stroke="#000" strokeWidth="0.5" />
+            <circle cx={optimalPos.x * 100} cy={optimalPos.y * 100} r={2.4} fill="#e8002d" stroke="#000" strokeWidth="0.5" />
+          </svg>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 14px 10px", fontSize: "0.72rem" }}>
+            <span><span style={{ color: "#4c9be8" }}>●</span> Actual — Lap {actualState.lap}/{actualLaps.length}</span>
+            <span><span style={{ color: "#e8002d" }}>●</span> AI Optimal — Lap {optimalState.lap}/{optimalLaps.length}</span>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 14px 12px" }}>
+          <button
+            className="btn-export"
+            onClick={() => {
+              if (elapsed >= totalDuration) {
+                setElapsed(0);
+                lastTsRef.current = null;
+                setPlaying(true);
+              } else {
+                setPlaying((p) => !p);
+              }
+            }}
+          >
+            {playing ? "Pause" : elapsed >= totalDuration ? "Replay" : "Play"}
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={totalDuration || 1}
+            step={0.1}
+            value={Math.min(elapsed, totalDuration)}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              setElapsed(v >= totalDuration ? totalDuration - 0.01 : v);
+              setPlaying(false);
+            }}
+            style={{ flex: 1 }}
+          />
+          <span className="muted" style={{ minWidth: 46, textAlign: "right", fontSize: "0.72rem" }}>
+            {elapsed.toFixed(0)}s
+          </span>
+          <select
+            value={speed}
+            onChange={(e) => setSpeed(Number(e.target.value))}
+            style={{ background: "var(--panel, #111)", color: "inherit", border: "1px solid #333", fontSize: "0.72rem", padding: "2px 4px" }}
+          >
+            <option value={10}>10×</option>
+            <option value={25}>25×</option>
+            <option value={50}>50×</option>
+            <option value={100}>100×</option>
+          </select>
         </div>
       </div>
     </div>
