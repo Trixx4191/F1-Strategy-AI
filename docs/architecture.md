@@ -28,6 +28,12 @@ FastF1 API
     │
     ▼
 [visualisation/]           ← Dashboard, degradation/strategy/rival plots
+
+React Mission Control
+    │
+    ├── `frontend/src/api.ts`      ← typed FastAPI request/result contracts
+    ├── `frontend/src/App.tsx`     ← session state, persistence, tabs, replay
+    └── `frontend/src/Charts.tsx`  ← SVG analytical charts
 ```
 
 ---
@@ -94,6 +100,21 @@ bump every January.
 
 FastF1's built-in cache (`Cache.enable_cache()`) stores downloaded sessions
 locally at `data/cache/`. Cached requests can reduce subsequent downloads for the same session.
+
+### Browser persistence and replay
+
+The primary React client keeps the active simulation and UI selections in
+browser `localStorage`. The active result is restored on refresh, while an
+explicit reset removes only that current-run snapshot. Separate saved-run
+records support loading, deleting, clearing, and comparing multiple simulation
+results locally. This layer is deliberately browser-local; it does not change
+the Python engine or create a server-side account/sync model.
+
+The Overview Track Map consumes the simulation's lap-time trace and FastF1
+circuit points. A requestAnimationFrame clock drives Play/Pause, seek, restart,
+and speed control; each driver node is positioned by lap-time interpolation
+along the circuit path. The map falls back gracefully when geometry or replay
+data is unavailable.
 
 ---
 

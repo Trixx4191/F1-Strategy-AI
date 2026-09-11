@@ -1939,10 +1939,18 @@ function TrackMap({ circuit, race, nodes, replayLaps = [] }: any) {
               <g key={n.code}>
                 <circle cx={x * 100} cy={y * 100} r={n.selected ? 3 : 2.1} fill={col}
                   stroke={n.selected ? "#fff" : undefined} strokeWidth={n.selected ? 0.7 : undefined} />
-                {n.selected && (
-                  <text x={x * 100} y={y * 100 - 5} textAnchor="middle" fill="#f5f5f5" fontSize="3.5"
-                    fontFamily="Antonio,sans-serif" fontWeight="700">{n.code}</text>
-                )}
+                <text
+                  x={x * 100}
+                  y={y * 100 - (n.selected ? 5 : 3.8)}
+                  textAnchor="middle"
+                  fill={n.selected ? "#ffffff" : "#d0d0d0"}
+                  fontSize={n.selected ? "3.5" : "2.7"}
+                  fontFamily="Antonio,sans-serif"
+                  fontWeight={n.selected ? "700" : "600"}
+                  paintOrder="stroke"
+                  stroke="#080808"
+                  strokeWidth={n.selected ? "0.7" : "0.45"}
+                >{n.code}</text>
               </g>
             );
           })}

@@ -38,6 +38,9 @@ This project builds a strategy decision-support system from race data: a system 
 - **Explores undercut and overcut scenarios** against a configurable rival
 - **Backtests** the highest-ranked simulated strategy against what the driver actually did, using real stint data
 - **Visualises everything** in an interactive dark-mode dashboard with an F1-app-inspired timing tower and weather strip
+- **Persists React dashboard state** in browser storage so the current result survives refreshes, with explicit reset and optional saved-run history
+- **Compares saved simulations** side by side, including winner ranking, mean-time deltas, win rates, and pit laps
+- **Replays simulations on the Track Map** with labelled driver nodes, seek, pause/play, restart, and adjustable playback speed
 
 ---
 

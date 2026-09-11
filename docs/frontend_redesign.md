@@ -142,13 +142,14 @@ These contracts will become the JSON API surface later.
 
 ### Phase B2 — Core panels
 - [ ] Real Timing Tower from classification + lap data
-- [ ] Track Map (static circuit outline first, then position dots)
+- [x] Track Map with animated simulation nodes, driver labels, and replay controls
 - [ ] Driver status cards with live tyre/cliff info
 - [ ] Strategy panel + Sim progress visualisation
 
 ### Phase B3 — Rival + polish + “live” feel
 - [ ] Rival EV panel integrated
-- [ ] Lap-by-lap or progressive reveal of results
+- [x] Lap-by-lap simulation replay with play/pause, seek, restart, and speed control
+- [x] Browser persistence for current runs and saved simulation comparison
 - [ ] Micro-animations, better density, responsive breakpoints
 - [ ] Export / screenshot mode
 
