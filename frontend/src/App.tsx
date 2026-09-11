@@ -12,7 +12,6 @@ import {
   LineChart,
   ScatterChart,
   BarChart,
-  HeatStrip,
   EvTimeline,
   TYRE,
   TRACE_COLORS,
@@ -98,7 +97,74 @@ type Tab =
   | "undercut"
   | "rival"
   | "backtest"
-  | "results";
+  | "results"
+  | "saved";
+
+type PersistedUiState = {
+  year: number;
+  race: string;
+  driver: string;
+  rival: string;
+  nSims: number;
+  strategyType: string;
+  noise: number;
+  useLiveTemp: boolean;
+  manualTemp: number;
+  tab: Tab;
+  autoPersist: boolean;
+};
+
+type PersistedCurrentRun = {
+  savedAt: number;
+  state: PersistedUiState;
+  result: SimulateResult;
+};
+
+type SavedRun = {
+  id: string;
+  label: string;
+  createdAt: number;
+  state: PersistedUiState;
+  result: SimulateResult;
+};
+
+const STORAGE_KEYS = {
+  current: "f1-strategy-ai.current-run.v1",
+  saved: "f1-strategy-ai.saved-runs.v1",
+  ui: "f1-strategy-ai.ui-state.v1",
+};
+
+function readFromStorage<T>(key: string): T | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeToStorage(key: string, value: unknown) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // ignore storage quota failures gracefully
+  }
+}
+
+function removeFromStorage(key: string) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // ignore storage failures gracefully
+  }
+}
+
+function makeSavedRunId(): string {
+  return `sim-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 export default function App() {
   const [latestYear, setLatestYear] = useState(2025);
@@ -117,6 +183,10 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("overview");
   const [useLiveTemp, setUseLiveTemp] = useState(true);
   const [manualTemp, setManualTemp] = useState(35);
+  const [autoPersist, setAutoPersist] = useState(true);
+  const [savedRuns, setSavedRuns] = useState<SavedRun[]>([]);
+  const [selectedSavedIds, setSelectedSavedIds] = useState<string[]>([]);
+  const [hasHydrated, setHasHydrated] = useState(false);
   const [rivalResult, setRivalResult] = useState<RivalAnalysisResult | null>(null);
   const [rivalBusy, setRivalBusy] = useState(false);
   // Interactive rival params (dashboard Tab 5)
@@ -130,12 +200,90 @@ export default function App() {
   const [newCompound, setNewCompound] = useState("HARD");
 
   useEffect(() => {
-    api.latestSeason().then((r) => { setLatestYear(r.year); setYear(r.year); }).catch(() => {});
+    const storedUi = readFromStorage<PersistedUiState>(STORAGE_KEYS.ui);
+    const storedCurrent = readFromStorage<PersistedCurrentRun>(STORAGE_KEYS.current);
+    const storedSaves = readFromStorage<SavedRun[]>(STORAGE_KEYS.saved);
+
+    if (storedUi) {
+      setYear(storedUi.year || 2024);
+      setRace(storedUi.race || "");
+      setDriver(storedUi.driver || "VER");
+      setRival(storedUi.rival || "NOR");
+      setNSims(storedUi.nSims || 500);
+      setStrategyType(storedUi.strategyType || "Both");
+      setNoise(storedUi.noise ?? 0.3);
+      setUseLiveTemp(storedUi.useLiveTemp ?? true);
+      setManualTemp(storedUi.manualTemp ?? 35);
+      setTab(storedUi.tab || "overview");
+      setAutoPersist(storedUi.autoPersist ?? true);
+    }
+
+    if (storedCurrent?.result) {
+      setSim(storedCurrent.result);
+      setSession({
+        year: storedCurrent.result.year,
+        race: storedCurrent.result.race,
+        race_laps: storedCurrent.result.race_laps,
+        timing: storedCurrent.result.timing,
+        circuit: storedCurrent.result.circuit,
+        weather: storedCurrent.result.weather,
+        session_drivers: storedCurrent.result.session_drivers,
+        drivers: storedCurrent.result.drivers,
+      });
+      setStatus("ready");
+      setTab(storedCurrent.state?.tab || "overview");
+    }
+
+    if (Array.isArray(storedSaves)) {
+      setSavedRuns(storedSaves);
+    }
+
+    setHasHydrated(true);
+    api.latestSeason().then((r) => { setLatestYear(r.year); setYear((prev) => prev || r.year); }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!hasHydrated) return;
+    writeToStorage(STORAGE_KEYS.ui, {
+      year,
+      race,
+      driver,
+      rival,
+      nSims,
+      strategyType,
+      noise,
+      useLiveTemp,
+      manualTemp,
+      tab,
+      autoPersist,
+    });
+  }, [hasHydrated, year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, tab, autoPersist]);
+
+  useEffect(() => {
+    if (!hasHydrated) return;
+    if (autoPersist && sim) {
+      writeToStorage(STORAGE_KEYS.current, {
+        savedAt: Date.now(),
+        state: { year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, tab, autoPersist },
+        result: sim,
+      });
+    } else {
+      removeFromStorage(STORAGE_KEYS.current);
+    }
+  }, [hasHydrated, autoPersist, sim, year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, tab]);
+
+  useEffect(() => {
+    if (!hasHydrated) return;
+    writeToStorage(STORAGE_KEYS.saved, savedRuns);
+  }, [hasHydrated, savedRuns]);
+
+  useEffect(() => {
+    api.latestSeason().then((r) => { setLatestYear(r.year); setYear((prev) => prev || r.year); }).catch(() => {});
   }, []);
 
   useEffect(() => {
     if (!year) return;
-    api.races(year).then((r) => { setRaces(r.races); setRace(r.races[0] ?? ""); })
+    api.races(year).then((r) => { setRaces(r.races); setRace((prev) => prev || r.races[0] || ""); })
       .catch((e) => setError(String(e.message || e)));
   }, [year]);
 
@@ -157,6 +305,42 @@ export default function App() {
       .catch((e) => { setSession(null); setStatus("error"); setError(String(e.message || e)); });
   }, [year, race]);
 
+  const persistCurrentRun = useCallback((result: SimulateResult) => {
+    if (!autoPersist) return;
+    const payload: PersistedCurrentRun = {
+      savedAt: Date.now(),
+      state: {
+        year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, tab, autoPersist,
+      },
+      result,
+    };
+    writeToStorage(STORAGE_KEYS.current, payload);
+  }, [autoPersist, year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, tab]);
+
+  const saveCurrentRunToSavedList = useCallback(() => {
+    if (!sim) return;
+    const item: SavedRun = {
+      id: makeSavedRunId(),
+      label: `${sim.race} · ${sim.driver} · ${new Date().toLocaleString([], { dateStyle: "short", timeStyle: "short" })}`,
+      createdAt: Date.now(),
+      state: {
+        year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, tab, autoPersist,
+      },
+      result: sim,
+    };
+    setSavedRuns((prev) => [item, ...prev]);
+  }, [sim, year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, tab, autoPersist]);
+
+  const resetCurrentRun = useCallback(() => {
+    setSim(null);
+    setSession(null);
+    setStatus("idle");
+    setError(null);
+    setRivalResult(null);
+    setTab("overview");
+    removeFromStorage(STORAGE_KEYS.current);
+  }, []);
+
   const runSim = useCallback(async () => {
     if (!year || !race) return;
     setStatus("loading"); setError(null);
@@ -171,14 +355,16 @@ export default function App() {
       setSession({
         year: result.year, race: result.race, race_laps: result.race_laps,
         timing: result.timing, circuit: result.circuit, weather: result.weather,
+        session_drivers: result.session_drivers, drivers: result.drivers,
       });
       setStatus("ready");
       setTab("overview");
+      persistCurrentRun(result);
     } catch (e: unknown) {
       setStatus("error");
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp]);
+  }, [year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, persistCurrentRun]);
 
   const timing: TimingRow[] = useMemo(() => {
     const rmap = rosterMap(sim?.drivers ?? session?.drivers);
@@ -223,6 +409,7 @@ export default function App() {
     { id: "rival", label: "Rival Analysis" },
     { id: "backtest", label: "Backtest" },
     { id: "results", label: "Results" },
+    { id: "saved", label: "Saved Sims" },
   ];
 
   function exportCsv() {
@@ -331,6 +518,22 @@ export default function App() {
         <button className="btn-run" disabled={status === "loading" || !race} onClick={runSim}>
           {status === "loading" ? "RUNNING…" : "▶  RUN SIMULATION"}
         </button>
+        <div className="sb-field" style={{ marginTop: 12 }}>
+          <label>
+            <input type="checkbox" checked={autoPersist} onChange={(e) => setAutoPersist(e.target.checked)} />
+            Auto-save current run in browser
+          </label>
+        </div>
+        {sim && (
+          <>
+            <button className="btn-run" style={{ marginTop: 12, background: "#1f2937" }} onClick={saveCurrentRunToSavedList}>
+              Save to My Sims
+            </button>
+            <button className="btn-run" style={{ marginTop: 8, background: "#4b5563" }} onClick={resetCurrentRun}>
+              Reset current run
+            </button>
+          </>
+        )}
       </aside>
 
       <div className="main">
@@ -364,116 +567,159 @@ export default function App() {
         </div>
 
         <div className="tab-content">
-          {tab === "overview" && (
-            <Overview
-              timing={timing} driver={driver} circuit={circuit} race={race}
-              strategies={strategies} tyreSummary={tyreSummary}
-              rivalData={rivalData} raceLaps={raceLaps} status={status} nSims={nSims}
-              weather={weather} pitLoss={sim?.pit_loss} optimal={sim?.optimal_strategy}
-              stopComparison={sim?.stop_comparison} roster={roster}
-            />
-          )}
-          {tab === "strategy" && (
-            <StrategyTab
-              strategies={strategies}
-              lapTraces={sim?.lap_traces ?? []}
-              ready={status === "ready"}
-              stopComparison={sim?.stop_comparison}
-              optimal={sim?.optimal_strategy}
-            />
-          )}
-          {tab === "tyres" && (
-            <TyresTab
-              curves={sim?.tyre_curves ?? []}
-              scatter={sim?.stint_scatter ?? []}
-              phaseSlopes={sim?.phase_slopes ?? []}
-              summary={sim?.model_summary ?? []}
-              tyreSummary={tyreSummary}
-            />
-          )}
-          {tab === "undercut" && (
-            <UndercutTab
-              cells={sim?.undercut_heatmap ?? []}
-              strategies={strategies}
-              raceLaps={raceLaps}
-              year={year}
-              race={race}
-              driver={driver}
-              rival={rival}
-              nSims={nSims}
-              strategyType={strategyType}
-              noise={noise}
-              useLiveTemp={useLiveTemp}
-              manualTemp={manualTemp}
-            />
-          )}
-          {tab === "rival" && (
-            <RivalTab
-              rival={rivalData}
-              fallbackRival={rival}
-              rivalResult={rivalResult}
-              rivalBusy={rivalBusy}
-              year={year} race={race} driver={driver} raceLaps={raceLaps}
-              rivalCompound={rivalCompound} setRivalCompound={setRivalCompound}
-              rivalTyreAge={rivalTyreAge} setRivalTyreAge={setRivalTyreAge}
-              gapToRival={gapToRival} setGapToRival={setGapToRival}
-              scanFrom={scanFrom} setScanFrom={setScanFrom}
-              scanTo={scanTo} setScanTo={setScanTo}
-              ourCompound={ourCompound} setOurCompound={setOurCompound}
-              ourTyreAge={ourTyreAge} setOurTyreAge={setOurTyreAge}
-              newCompound={newCompound} setNewCompound={setNewCompound}
-              noise={noise}
-              onRunRival={async () => {
-                setRivalBusy(true); setError(null);
-                try {
-                  const r = await api.rivalAnalysis({
-                    year, race, driver, rival,
-                    rival_compound: rivalCompound, rival_tyre_age: rivalTyreAge,
-                    gap_to_rival: gapToRival, scan_from_lap: scanFrom, scan_to_lap: scanTo,
-                    our_compound: ourCompound, our_tyre_age: ourTyreAge, new_compound: newCompound,
-                    n_simulations: Math.min(200, nSims), noise_std: noise, run_h2h: true,
+          {[
+            { id: "overview", panel: (
+              <Overview
+                timing={timing} driver={driver} circuit={circuit} race={race}
+                strategies={strategies} tyreSummary={tyreSummary}
+                rivalData={rivalData} raceLaps={raceLaps} status={status} nSims={nSims}
+                weather={weather} pitLoss={sim?.pit_loss} optimal={sim?.optimal_strategy}
+                stopComparison={sim?.stop_comparison} roster={roster}
+              />
+            ) },
+            { id: "strategy", panel: (
+              <StrategyTab
+                strategies={strategies}
+                lapTraces={sim?.lap_traces ?? []}
+                ready={status === "ready"}
+                stopComparison={sim?.stop_comparison}
+                optimal={sim?.optimal_strategy}
+              />
+            ) },
+            { id: "tyres", panel: (
+              <TyresTab
+                curves={sim?.tyre_curves ?? []}
+                scatter={sim?.stint_scatter ?? []}
+                phaseSlopes={sim?.phase_slopes ?? []}
+                summary={sim?.model_summary ?? []}
+                tyreSummary={tyreSummary}
+              />
+            ) },
+            { id: "undercut", panel: (
+              <UndercutTab
+                cells={sim?.undercut_heatmap ?? []}
+                strategies={strategies}
+                raceLaps={raceLaps}
+                year={year}
+                race={race}
+                driver={driver}
+                rival={rival}
+                nSims={nSims}
+                strategyType={strategyType}
+                noise={noise}
+                useLiveTemp={useLiveTemp}
+                manualTemp={manualTemp}
+              />
+            ) },
+            { id: "rival", panel: (
+              <RivalTab
+                rival={rivalData}
+                fallbackRival={rival}
+                rivalResult={rivalResult}
+                rivalBusy={rivalBusy}
+                year={year} race={race} driver={driver} raceLaps={raceLaps}
+                rivalCompound={rivalCompound} setRivalCompound={setRivalCompound}
+                rivalTyreAge={rivalTyreAge} setRivalTyreAge={setRivalTyreAge}
+                gapToRival={gapToRival} setGapToRival={setGapToRival}
+                scanFrom={scanFrom} setScanFrom={setScanFrom}
+                scanTo={scanTo} setScanTo={setScanTo}
+                ourCompound={ourCompound} setOurCompound={setOurCompound}
+                ourTyreAge={ourTyreAge} setOurTyreAge={setOurTyreAge}
+                newCompound={newCompound} setNewCompound={setNewCompound}
+                noise={noise}
+                onRunRival={async () => {
+                  setRivalBusy(true); setError(null);
+                  try {
+                    const r = await api.rivalAnalysis({
+                      year, race, driver, rival,
+                      rival_compound: rivalCompound, rival_tyre_age: rivalTyreAge,
+                      gap_to_rival: gapToRival, scan_from_lap: scanFrom, scan_to_lap: scanTo,
+                      our_compound: ourCompound, our_tyre_age: ourTyreAge, new_compound: newCompound,
+                      n_simulations: Math.min(200, nSims), noise_std: noise, run_h2h: true,
+                    });
+                    setRivalResult(r);
+                  } catch (e: unknown) {
+                    setError(e instanceof Error ? e.message : String(e));
+                  } finally { setRivalBusy(false); }
+                }}
+              />
+            ) },
+            { id: "backtest", panel: <BacktestTab backtest={sim?.backtest ?? null} driver={driver} circuit={circuit} race={race} /> },
+            { id: "results", panel: (
+              <ResultsTab
+                strategies={strategies}
+                onExport={exportCsv}
+                onExportBackend={async () => {
+                  try {
+                    const res = await api.simulateCsv({
+                      year, race, driver, rival,
+                      n_simulations: nSims, strategy_type: strategyType,
+                      noise_std: noise, use_live_temp: useLiveTemp,
+                      precomputed_strategies: strategies,
+                      ...(useLiveTemp ? {} : { track_temp_override: manualTemp }),
+                    } as any);
+                    if (!res.ok) throw new Error(res.statusText || "CSV request failed");
+                    const blob = await res.blob();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `f1_strategy_${year}_${race}_${driver}.csv`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : String(e));
+                  }
+                }}
+                ready={status === "ready"}
+              />
+            ) },
+            { id: "saved", panel: (
+              <SavedRunsTab
+                savedRuns={savedRuns}
+                selectedIds={selectedSavedIds}
+                onToggleSelect={(id) => {
+                  setSelectedSavedIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+                }}
+                onLoad={(run) => {
+                  setSim(run.result);
+                  setStatus("ready");
+                  setSession({
+                    year: run.result.year,
+                    race: run.result.race,
+                    race_laps: run.result.race_laps,
+                    timing: run.result.timing,
+                    circuit: run.result.circuit,
+                    weather: run.result.weather,
+                    session_drivers: run.result.session_drivers,
+                    drivers: run.result.drivers,
                   });
-                  setRivalResult(r);
-                } catch (e: unknown) {
-                  setError(e instanceof Error ? e.message : String(e));
-                } finally { setRivalBusy(false); }
-              }}
-            />
-          )}
-          {tab === "backtest" && <BacktestTab backtest={sim?.backtest ?? null} driver={driver} circuit={circuit} race={race} />}
-          {tab === "results" && (
-            <ResultsTab
-              strategies={strategies}
-              onExport={exportCsv}
-              onExportBackend={async () => {
-                try {
-                  const res = await api.simulateCsv({
-                    year, race, driver, rival,
-                    n_simulations: nSims, strategy_type: strategyType,
-                    noise_std: noise, use_live_temp: useLiveTemp,
-                    // Strategies are already computed and sitting in state
-                    // from the initial simulate() call that rendered this
-                    // tab — passing them through lets the backend skip a
-                    // full session-reload + Monte Carlo re-run just to
-                    // regenerate a CSV of data it already sent us once.
-                    precomputed_strategies: strategies,
-                    ...(useLiveTemp ? {} : { track_temp_override: manualTemp }),
-                  } as any);
-                  if (!res.ok) throw new Error(res.statusText || "CSV request failed");
-                  const blob = await res.blob();
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement("a");
-                  a.href = url;
-                  a.download = `f1_strategy_${year}_${race}_${driver}.csv`;
-                  a.click();
-                  URL.revokeObjectURL(url);
-                } catch (e) {
-                  setError(e instanceof Error ? e.message : String(e));
-                }
-              }}
-              ready={status === "ready"}
-            />
-          )}
+                  setYear(run.state.year);
+                  setRace(run.state.race);
+                  setDriver(run.state.driver);
+                  setRival(run.state.rival);
+                  setNSims(run.state.nSims);
+                  setStrategyType(run.state.strategyType);
+                  setNoise(run.state.noise);
+                  setUseLiveTemp(run.state.useLiveTemp);
+                  setManualTemp(run.state.manualTemp);
+                  setTab("overview");
+                }}
+                onDelete={(id) => {
+                  setSavedRuns((prev) => prev.filter((run) => run.id !== id));
+                  setSelectedSavedIds((prev) => prev.filter((x) => x !== id));
+                }}
+                onClearAll={() => {
+                  setSavedRuns([]);
+                  setSelectedSavedIds([]);
+                  removeFromStorage(STORAGE_KEYS.saved);
+                }}
+              />
+            ) }
+          ].map((pane) => (
+            <div key={pane.id} style={{ display: tab === pane.id ? "block" : "none" }}>
+              {pane.panel}
+            </div>
+          ))}
         </div>
 
         <div className="footer-note">
@@ -484,8 +730,130 @@ export default function App() {
   );
 }
 
+function SavedRunsTab({
+  savedRuns,
+  selectedIds,
+  onToggleSelect,
+  onLoad,
+  onDelete,
+  onClearAll,
+}: {
+  savedRuns: SavedRun[];
+  selectedIds: string[];
+  onToggleSelect: (id: string) => void;
+  onLoad: (run: SavedRun) => void;
+  onDelete: (id: string) => void;
+  onClearAll: () => void;
+}) {
+  const selectedRuns = savedRuns.filter((run) => selectedIds.includes(run.id));
+
+  return (
+    <div className="grid">
+      <div className="panel span-full">
+        <div className="panel-header">
+          <span className="title">Saved simulations</span>
+          <span>{savedRuns.length} saved</span>
+        </div>
+        <div className="panel-body">
+          {savedRuns.length === 0 ? (
+            <div className="muted">No saved sims yet. Run a simulation and save it to compare later.</div>
+          ) : (
+            <div style={{ display: "grid", gap: 10 }}>
+              {savedRuns.map((run) => (
+                <div key={run.id} className="strat-row" style={{ gridTemplateColumns: "48px 1.5fr 140px 120px 120px" }}>
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.includes(run.id)}
+                    onChange={() => onToggleSelect(run.id)}
+                    aria-label={`Select ${run.label}`}
+                  />
+                  <div>
+                    <div style={{ fontWeight: 700 }}>{run.label}</div>
+                    <div className="muted" style={{ fontSize: "0.7rem" }}>
+                      {run.state.year} · {run.state.race} · {run.state.driver} vs {run.state.rival}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>{run.result.optimal_strategy?.mean_time != null ? `${run.result.optimal_strategy.mean_time.toFixed(1)}s` : "—"}</div>
+                  <button className="btn-run" style={{ padding: "0.5rem 0.8rem", fontSize: "0.7rem" }} onClick={() => onLoad(run)}>
+                    Load
+                  </button>
+                  <button className="btn-run" style={{ padding: "0.5rem 0.8rem", fontSize: "0.7rem", background: "#4b5563" }} onClick={() => onDelete(run.id)}>
+                    Delete
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {savedRuns.length > 0 && (
+            <div style={{ display: "flex", gap: 12, marginTop: 18, alignItems: "center", flexWrap: "wrap" }}>
+              <button className="btn-run" disabled={selectedRuns.length < 2}>
+                Compare selected ({selectedRuns.length})
+              </button>
+              <button className="btn-run" style={{ background: "#4b5563" }} onClick={onClearAll}>Clear all saved sims</button>
+            </div>
+          )}
+          {selectedRuns.length >= 2 && (
+            <div className="panel" style={{ marginTop: 18 }}>
+              <div className="panel-header"><span className="title">Side-by-side comparison</span></div>
+              <div className="panel-body">
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
+                  {selectedRuns.map((run) => {
+                    const best = run.result.optimal_strategy ?? run.result.strategies?.[0] ?? null;
+                    const strategyText = best?.strategy || best?.compound_sequence?.join("→") || "—";
+                    return (
+                      <div key={run.id} className="ev-block" style={{ borderLeft: "3px solid #e8002d", padding: 12 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                          <div style={{ fontWeight: 700, fontSize: "0.8rem" }}>{run.label}</div>
+                          <button
+                            className="btn-run"
+                            style={{ padding: "0.45rem 0.7rem", fontSize: "0.7rem", margin: 0 }}
+                            onClick={() => onLoad(run)}
+                          >
+                            Load
+                          </button>
+                        </div>
+                        <div className="muted" style={{ fontSize: "0.7rem", marginTop: 6 }}>
+                          {run.state.year} · {run.state.race} · {run.state.driver} vs {run.state.rival}
+                        </div>
+                        <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+                          <div>
+                            <div className="lbl">Best strategy</div>
+                            <div className="val" style={{ color: "#fff", fontSize: "0.8rem" }}>{strategyText}</div>
+                          </div>
+                          <div>
+                            <div className="lbl">Mean time</div>
+                            <div className="val" style={{ color: "#e8002d" }}>
+                              {best?.mean_time != null ? `${best.mean_time.toFixed(1)}s` : "—"}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="lbl">Win rate</div>
+                            <div className="val" style={{ color: "#ffd700" }}>
+                              {best?.win_rate != null ? `${(best.win_rate * 100).toFixed(0)}%` : "—"}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="lbl">Pit laps</div>
+                            <div className="val" style={{ color: "#fff", fontSize: "0.75rem" }}>
+                              {(best?.pit_laps && best.pit_laps.length ? best.pit_laps.join(", ") : "—")}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Overview(props: any) {
-  const { timing, driver, circuit, race, strategies, tyreSummary, rivalData, raceLaps, status, nSims, weather, pitLoss, optimal, stopComparison, roster = {} } = props;
+  const { timing, driver, circuit, race, strategies, tyreSummary, rivalData, raceLaps, status, nSims, weather, pitLoss, optimal, roster = {} } = props;
   return (
     <div className="grid">
       {(optimal || weather || pitLoss != null) && (
@@ -799,6 +1167,7 @@ function TyresTab({ curves, scatter, phaseSlopes, summary, tyreSummary }: any) {
 }
 
 function UndercutTab({ cells, strategies, raceLaps, year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp }: any) {
+  void cells;
   const [imgUrlLeft, setImgUrlLeft] = useState<string | null>(null);
   const [imgUrlRight, setImgUrlRight] = useState<string | null>(null);
   const [imgUrlCompare, setImgUrlCompare] = useState<string | null>(null);
@@ -931,6 +1300,7 @@ function RivalTab(props: any) {
     ourCompound, setOurCompound, ourTyreAge, setOurTyreAge,
     newCompound, setNewCompound, onRunRival,
   } = props;
+  void driver;
   const r = rivalResult || {};
   const underTL = r.undercut_timeline || rival?.undercut_timeline || [];
   const overTL = r.overcut_timeline || rival?.overcut_timeline || [];

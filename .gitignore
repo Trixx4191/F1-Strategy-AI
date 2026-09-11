@@ -1,4 +1,4 @@
-# ── Python ───────────────────────────────────────────────────────────────────
+#  Python 
 __pycache__/
 *.py[cod]
 *$py.class
@@ -19,35 +19,35 @@ lib/
 lib64/
 wheels/
 frontend/node_modules/
-# ── Virtual environments ──────────────────────────────────────────────────────
+# ── Virtual environments 
 venv/
 .venv/
 env/
 ENV/
 .env
 
-# ── Environment variables ─────────────────────────────────────────────────────
+# ── Environment variables 
 .env
 .env.local
 .env.*.local
 *.env
 
-# ── FastF1 cache (large — regenerated automatically) ─────────────────────────
+# ── FastF1 cache (large — regenerated automatically) 
 data/cache/
 data/raw/
 data/processed/
 
-# ── Outputs (generated files) ─────────────────────────────────────────────────
+# ── Outputs (generated files) 
 outputs/*.png
 outputs/*.pdf
 outputs/*.csv
 outputs/*.html
 outputs/plot_cache
-# ── Jupyter ───────────────────────────────────────────────────────────────────
+# ── Jupyter ──
 .ipynb_checkpoints/
 *.ipynb
 
-# ── IDEs ─────────────────────────────────────────────────────────────────────
+# ── IDEs 
 .vscode/
 .idea/
 *.swp
@@ -55,19 +55,19 @@ outputs/plot_cache
 .DS_Store
 Thumbs.db
 
-# ── Test & coverage ───────────────────────────────────────────────────────────
+# ── Test & coverage 
 .pytest_cache/
 .coverage
 htmlcov/
 .tox/
 
-# ── Streamlit ─────────────────────────────────────────────────────────────────
+# ── Streamlit 
 .streamlit/secrets.toml
 
-# ── Backup files ─────────────────────────────────────────────────────────────
+# ── Backup files 
 *.bak
 *.orig
 
-# ── Background images (optional — users can supply their own) ─────────────────
+# ── Background images (optional — users can supply their own) 
 src/visualisation/F1_RED.jpeg
 src/visualisation/JACK_TEAM_RACING.jpeg

@@ -149,6 +149,7 @@ export function BarChart({
   height?: number;
   valueKey?: string;
 }) {
+  void valueKey;
   if (!items.length) return <div className="muted">No strategies</div>;
   const pad = 28;
   const maxV = Math.max(...items.map((i) => i.value));
