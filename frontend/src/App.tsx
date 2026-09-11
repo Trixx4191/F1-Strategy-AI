@@ -574,6 +574,7 @@ export default function App() {
                 strategies={strategies} tyreSummary={tyreSummary}
                 rivalData={rivalData} raceLaps={raceLaps} status={status} nSims={nSims}
                 weather={weather} pitLoss={sim?.pit_loss} optimal={sim?.optimal_strategy}
+                backtest={sim?.backtest} lapTraces={sim?.lap_traces ?? []}
                 stopComparison={sim?.stop_comparison} roster={roster}
               />
             ) },
@@ -746,6 +747,16 @@ function SavedRunsTab({
   onClearAll: () => void;
 }) {
   const selectedRuns = savedRuns.filter((run) => selectedIds.includes(run.id));
+  const rankedRuns = [...selectedRuns].sort((a, b) => {
+    const aMean = a.result.optimal_strategy?.mean_time ?? Number.POSITIVE_INFINITY;
+    const bMean = b.result.optimal_strategy?.mean_time ?? Number.POSITIVE_INFINITY;
+    return aMean - bMean;
+  });
+  const bestMeanTime = rankedRuns[0]?.result.optimal_strategy?.mean_time ?? null;
+  const bestWinRate = rankedRuns.reduce((max, run) => {
+    const v = run.result.optimal_strategy?.win_rate ?? 0;
+    return Math.max(max, v);
+  }, 0);
 
   return (
     <div className="grid">
@@ -786,24 +797,43 @@ function SavedRunsTab({
           )}
           {savedRuns.length > 0 && (
             <div style={{ display: "flex", gap: 12, marginTop: 18, alignItems: "center", flexWrap: "wrap" }}>
-              <button className="btn-run" disabled={selectedRuns.length < 2}>
+              <button
+                className="btn-run"
+                disabled={selectedRuns.length < 2}
+                onClick={() => {
+                  if (selectedRuns.length >= 2) {
+                    document.getElementById("saved-compare-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                  }
+                }}
+              >
                 Compare selected ({selectedRuns.length})
               </button>
               <button className="btn-run" style={{ background: "#4b5563" }} onClick={onClearAll}>Clear all saved sims</button>
             </div>
           )}
           {selectedRuns.length >= 2 && (
-            <div className="panel" style={{ marginTop: 18 }}>
-              <div className="panel-header"><span className="title">Side-by-side comparison</span></div>
+            <div id="saved-compare-panel" className="panel" style={{ marginTop: 18 }}>
+              <div className="panel-header">
+                <span className="title">Side-by-side comparison</span>
+                <span className="muted">{rankedRuns[0]?.label ?? "Winner"} leads</span>
+              </div>
               <div className="panel-body">
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
-                  {selectedRuns.map((run) => {
+                  {rankedRuns.map((run, index) => {
                     const best = run.result.optimal_strategy ?? run.result.strategies?.[0] ?? null;
                     const strategyText = best?.strategy || best?.compound_sequence?.join("→") || "—";
+                    const meanTime = best?.mean_time ?? null;
+                    const winRate = best?.win_rate ?? 0;
+                    const delta = bestMeanTime != null && meanTime != null ? meanTime - bestMeanTime : 0;
+                    const winnerLabel = index === 0 ? "Winner" : index === 1 ? "Runner-up" : `Rank ${index + 1}`;
+
                     return (
                       <div key={run.id} className="ev-block" style={{ borderLeft: "3px solid #e8002d", padding: 12 }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-                          <div style={{ fontWeight: 700, fontSize: "0.8rem" }}>{run.label}</div>
+                          <div>
+                            <div style={{ fontWeight: 700, fontSize: "0.8rem" }}>{run.label}</div>
+                            <div className="muted" style={{ fontSize: "0.62rem", textTransform: "uppercase", letterSpacing: "0.06em" }}>{winnerLabel}</div>
+                          </div>
                           <button
                             className="btn-run"
                             style={{ padding: "0.45rem 0.7rem", fontSize: "0.7rem", margin: 0 }}
@@ -815,6 +845,22 @@ function SavedRunsTab({
                         <div className="muted" style={{ fontSize: "0.7rem", marginTop: 6 }}>
                           {run.state.year} · {run.state.race} · {run.state.driver} vs {run.state.rival}
                         </div>
+                        <div style={{ marginTop: 10, marginBottom: 8 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.68rem", marginBottom: 4 }}>
+                            <span className="muted">Win rate</span>
+                            <span>{winRate > 0 ? `${(winRate * 100).toFixed(0)}%` : "—"}</span>
+                          </div>
+                          <div style={{ height: 7, width: "100%", borderRadius: 999, background: "rgba(255,255,255,0.08)", overflow: "hidden" }}>
+                            <div
+                              style={{
+                                height: "100%",
+                                width: `${bestWinRate > 0 ? Math.max(8, (winRate / bestWinRate) * 100) : 0}%`,
+                                borderRadius: 999,
+                                background: index === 0 ? "linear-gradient(90deg, #e8002d, #ff7a7a)" : "linear-gradient(90deg, #00d2be, #7ef5e4)",
+                              }}
+                            />
+                          </div>
+                        </div>
                         <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
                           <div>
                             <div className="lbl">Best strategy</div>
@@ -822,8 +868,13 @@ function SavedRunsTab({
                           </div>
                           <div>
                             <div className="lbl">Mean time</div>
-                            <div className="val" style={{ color: "#e8002d" }}>
-                              {best?.mean_time != null ? `${best.mean_time.toFixed(1)}s` : "—"}
+                            <div className="val" style={{ color: index === 0 ? "#e8002d" : "#fff" }}>
+                              {meanTime != null ? `${meanTime.toFixed(1)}s` : "—"}
+                              {bestMeanTime != null && meanTime != null && index > 0 && (
+                                <span style={{ marginLeft: 8, color: "#ffd166", fontSize: "0.7rem" }}>
+                                  {`+${delta.toFixed(2)}s`}
+                                </span>
+                              )}
                             </div>
                           </div>
                           <div>
@@ -853,7 +904,7 @@ function SavedRunsTab({
 }
 
 function Overview(props: any) {
-  const { timing, driver, circuit, race, strategies, tyreSummary, rivalData, raceLaps, status, nSims, weather, pitLoss, optimal, roster = {} } = props;
+  const { timing, driver, circuit, race, strategies, tyreSummary, rivalData, raceLaps, status, nSims, weather, pitLoss, optimal, backtest, lapTraces, roster = {} } = props;
   return (
     <div className="grid">
       {(optimal || weather || pitLoss != null) && (
@@ -919,11 +970,11 @@ function Overview(props: any) {
         </div>
       </div>
       <div className="panel">
-        <div className="panel-header"><span className="title">Track Map</span><span>LIVE</span></div>
+        <div className="panel-header"><span className="title">Track Map</span><span>{backtest ? "SIM REPLAY" : "LIVE"}</span></div>
         <div className="panel-body no-pad">
           <TrackMap circuit={circuit} race={race} nodes={timing.slice(0, 12).map((r: TimingRow) => ({
             code: r.driver, compound: r.compound || undefined, color: r.team_color, selected: r.driver === driver,
-          }))} />
+          }))} replayLaps={backtest?.optimal?.lap_times ?? lapTraces?.[0]?.lap_times ?? []} />
         </div>
       </div>
       <div className="panel">
@@ -1712,8 +1763,8 @@ function BacktestReplay({ backtest, circuit, race }: any) {
         <span>{race} — Actual vs AI Optimal</span>
       </div>
       <div className="panel-body no-pad">
-        <div style={{ position: "relative", width: "100%", background: "radial-gradient(ellipse at center, #0d0d0d 0%, #000 100%)" }}>
-          <svg viewBox="0 0 100 100" style={{ width: "100%", display: "block" }}>
+        <div className="replay-stage" style={{ position: "relative", width: "100%", background: "radial-gradient(ellipse at center, #0d0d0d 0%, #000 100%)" }}>
+          <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" style={{ width: "100%", height: "100%", display: "block" }}>
             <path d={pathD} fill="none" stroke="#1a1a1a" strokeWidth="6" strokeLinejoin="round" strokeLinecap="round" />
             <path d={pathD} fill="none" stroke="#2c2c2c" strokeWidth="3.4" strokeLinejoin="round" strokeLinecap="round" />
             <path d={pathD} fill="none" stroke="#484848" strokeWidth="1" strokeLinejoin="round" strokeLinecap="round" />
@@ -1813,9 +1864,57 @@ function ResultsTab({ strategies, onExport, onExportBackend, ready }: any) {
   );
 }
 
-function TrackMap({ circuit, race, nodes }: any) {
+function TrackMap({ circuit, race, nodes, replayLaps = [] }: any) {
   const points = circuit?.points ?? [];
   const label = (circuit?.name || race || "CIRCUIT").toUpperCase();
+  const lapTimes: number[] = replayLaps.filter((value: unknown) => Number.isFinite(Number(value))).map(Number);
+  const cumulativeTimes = useMemo(() => {
+    const cumulative = [0];
+    for (const lapTime of lapTimes) cumulative.push(cumulative[cumulative.length - 1] + lapTime);
+    return cumulative;
+  }, [replayLaps]);
+  const totalDuration = cumulativeTimes[cumulativeTimes.length - 1] || 0;
+  const [elapsed, setElapsed] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState(25);
+  const animationRef = useRef<number | null>(null);
+  const lastTimestampRef = useRef<number | null>(null);
+  const replayKey = lapTimes.join(",");
+
+  useEffect(() => {
+    setElapsed(0);
+    setPlaying(false);
+  }, [replayKey]);
+
+  useEffect(() => {
+    if (!playing || points.length < 2 || nodes.length === 0 || totalDuration <= 0) {
+      lastTimestampRef.current = null;
+      return;
+    }
+
+    const animate = (timestamp: number) => {
+      if (lastTimestampRef.current == null) lastTimestampRef.current = timestamp;
+      const elapsedSeconds = (timestamp - lastTimestampRef.current) / 1000;
+      lastTimestampRef.current = timestamp;
+      setElapsed((previous) => {
+        const next = previous + elapsedSeconds * speed;
+        if (next >= totalDuration) {
+          setPlaying(false);
+          return totalDuration;
+        }
+        return next;
+      });
+      animationRef.current = requestAnimationFrame(animate);
+    };
+
+    animationRef.current = requestAnimationFrame(animate);
+    return () => {
+      if (animationRef.current != null) cancelAnimationFrame(animationRef.current);
+      animationRef.current = null;
+      lastTimestampRef.current = null;
+    };
+  }, [nodes.length, playing, points.length, speed, totalDuration]);
+
   let pathD = "";
   if (points.length >= 2) {
     pathD = `M ${points[0].x * 100} ${points[0].y * 100} ` +
@@ -1829,9 +1928,12 @@ function TrackMap({ circuit, race, nodes }: any) {
           <path d={pathD} fill="none" stroke="#2e2e2e" strokeWidth="3.5" strokeLinejoin="round" />
           <path d={pathD} fill="none" stroke="#4a4a4a" strokeWidth="1.1" strokeLinejoin="round" />
           {nodes.map((n: any, i: number) => {
-            const angle = (2 * Math.PI * i) / Math.max(nodes.length, 1) - Math.PI / 2;
-            const x = n.x ?? 0.5 + 0.32 * Math.cos(angle);
-            const y = n.y ?? 0.5 + 0.28 * Math.sin(angle);
+            const fieldOffset = totalDuration > 0 ? (i / Math.max(nodes.length, 1)) * totalDuration : 0;
+            const raceTime = totalDuration > 0 ? (elapsed + fieldOffset) % totalDuration : 0;
+            const state = totalDuration > 0 ? lapProgressAt(cumulativeTimes, lapTimes, raceTime) : { progress: 0 };
+            const position = interpolateAlongPath(points, state.progress);
+            const x = position.x;
+            const y = position.y;
             const col = (n.compound && TYRE[n.compound.toUpperCase()]) || n.color || "#888";
             return (
               <g key={n.code}>
@@ -1852,8 +1954,46 @@ function TrackMap({ circuit, race, nodes }: any) {
       )}
       <div className="track-caption">
         <span className="flag-chip"><RaceFlag race={race} size={18} /><span>{label}</span></span>
-        <span>{nodes.length || "—"} NODES · {points.length || 0} PTS</span>
+        <span>{nodes.length || "—"} NODES · {points.length || 0} PTS · {totalDuration > 0 ? `L${lapProgressAt(cumulativeTimes, lapTimes, elapsed).lap}/${lapTimes.length}` : "NO REPLAY"}</span>
       </div>
+      {totalDuration > 0 && (
+        <div className="track-replay-controls">
+          <button
+            className="btn-export"
+            onClick={() => {
+              if (elapsed >= totalDuration) {
+                setElapsed(0);
+                lastTimestampRef.current = null;
+                setPlaying(true);
+              } else {
+                setPlaying((current) => !current);
+              }
+            }}
+          >
+            {playing ? "Pause" : elapsed >= totalDuration ? "Replay" : "Play"}
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={totalDuration}
+            step={0.1}
+            value={Math.min(elapsed, totalDuration)}
+            aria-label="Track replay position"
+            onChange={(event) => {
+              setElapsed(Number(event.target.value));
+              setPlaying(false);
+              lastTimestampRef.current = null;
+            }}
+          />
+          <span className="muted replay-time">{elapsed.toFixed(0)}s</span>
+          <select value={speed} aria-label="Track replay speed" onChange={(event) => setSpeed(Number(event.target.value))}>
+            <option value={10}>10x</option>
+            <option value={25}>25x</option>
+            <option value={50}>50x</option>
+            <option value={100}>100x</option>
+          </select>
+        </div>
+      )}
     </div>
   );
 }
