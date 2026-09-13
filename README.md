@@ -17,7 +17,7 @@
 **Primary UI is React Mission Control:**
 
 ```bash
-PYTHONPATH=$(pwd) uvicorn backend.main:app --reload --port 8000
+PYTHONPATH=$(pwd) python -m uvicorn backend.main:app --reload --port 8000
 cd frontend && npm install && npm run dev
 ```
 
