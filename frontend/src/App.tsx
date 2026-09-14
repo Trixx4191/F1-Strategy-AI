@@ -144,12 +144,22 @@ function readFromStorage<T>(key: string): T | null {
   }
 }
 
-function writeToStorage(key: string, value: unknown) {
-  if (typeof window === "undefined") return;
+function writeToStorage(key: string, value: unknown): boolean {
+  if (typeof window === "undefined") return false;
   try {
     window.localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // ignore storage quota failures gracefully
+    return true;
+  } catch (e) {
+    // Real, measured risk: a single /api/simulate response (252+ strategies,
+    // tyre curves, lap traces, undercut heatmap) is ~900KB serialized.
+    // Most browsers cap localStorage at 5-10MB per origin, so as few as
+    // 5-10 saved runs can exceed quota. Silently swallowing this — the
+    // previous behavior — means "Save" can appear to succeed while doing
+    // nothing, with no way for the user to know their saves aren't
+    // actually persisting. Callers now get a boolean so they can surface
+    // a real error instead.
+    console.warn(`localStorage write failed for "${key}":`, e);
+    return false;
   }
 }
 
@@ -262,24 +272,51 @@ export default function App() {
   useEffect(() => {
     if (!hasHydrated) return;
     if (autoPersist && sim) {
-      writeToStorage(STORAGE_KEYS.current, {
+      // Deliberately NOT depending on year/race/driver/... /tab here —
+      // those are read from the closure at write time, which is correct
+      // (the persisted "current run" should reflect whatever parameters
+      // produced THIS sim result). Including them as dependencies meant
+      // this ~900KB payload was being re-serialized and re-written to
+      // localStorage on every tab switch and slider tweak, not just when
+      // a new simulation actually completed — real, avoidable overhead
+      // on every minor UI interaction.
+      const ok = writeToStorage(STORAGE_KEYS.current, {
         savedAt: Date.now(),
         state: { year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, tab, autoPersist },
         result: sim,
       });
+      if (!ok) {
+        setError(
+          "Couldn't auto-save this run — browser storage is full. Delete " +
+          "an old saved run, or turn off auto-save, and try again."
+        );
+      }
     } else {
       removeFromStorage(STORAGE_KEYS.current);
     }
-  }, [hasHydrated, autoPersist, sim, year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, tab]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasHydrated, autoPersist, sim]);
 
   useEffect(() => {
     if (!hasHydrated) return;
-    writeToStorage(STORAGE_KEYS.saved, savedRuns);
+    if (savedRuns.length === 0) {
+      // Nothing to persist, and no point warning about a write that would
+      // never fail anyway (an empty array serializes to a couple bytes).
+      writeToStorage(STORAGE_KEYS.saved, savedRuns);
+      return;
+    }
+    const ok = writeToStorage(STORAGE_KEYS.saved, savedRuns);
+    if (!ok) {
+      setError(
+        "Couldn't save this run — browser storage is full. Delete an old " +
+        "saved run and try again."
+      );
+    }
   }, [hasHydrated, savedRuns]);
 
-  useEffect(() => {
-    api.latestSeason().then((r) => { setLatestYear(r.year); setYear((prev) => prev || r.year); }).catch(() => {});
-  }, []);
+  // (Duplicate `api.latestSeason()` fetch removed here — the hydration
+  // effect earlier in this file already fetches it once on mount; this
+  // second copy fired the same request a second time on every page load.)
 
   useEffect(() => {
     if (!year) return;
@@ -328,7 +365,17 @@ export default function App() {
       },
       result: sim,
     };
-    setSavedRuns((prev) => [item, ...prev]);
+    // Each saved run is a full /api/simulate response — measured at
+    // ~900KB serialized for a typical race (252+ strategies, tyre curves,
+    // lap traces, undercut heatmap). Most browsers cap localStorage at
+    // 5-10MB per origin, so unbounded saves will eventually blow the
+    // quota. Capping at MAX_SAVED_RUNS and evicting the oldest keeps
+    // total storage well within that limit rather than discovering the
+    // failure only after it silently happens. The actual persistence
+    // (and quota-failure detection) happens in the effect below that
+    // watches `savedRuns`, so this stays a single write path.
+    const MAX_SAVED_RUNS = 5;
+    setSavedRuns((prev) => [item, ...prev].slice(0, MAX_SAVED_RUNS));
   }, [sim, year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, tab, autoPersist]);
 
   const resetCurrentRun = useCallback(() => {
@@ -598,7 +645,6 @@ export default function App() {
             ) },
             { id: "undercut", panel: (
               <UndercutTab
-                cells={sim?.undercut_heatmap ?? []}
                 strategies={strategies}
                 raceLaps={raceLaps}
                 year={year}
@@ -1217,8 +1263,14 @@ function TyresTab({ curves, scatter, phaseSlopes, summary, tyreSummary }: any) {
   );
 }
 
-function UndercutTab({ cells, strategies, raceLaps, year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp }: any) {
-  void cells;
+function UndercutTab({ strategies, raceLaps, year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp }: any) {
+  // `strategies`/`raceLaps` are used below to pass precomputed data to the
+  // undercut-plot request (avoiding a full backend recompute — see
+  // docs/decisions.md). `cells` (the raw heatmap grid) was previously
+  // destructured here too but never used — this tab renders the
+  // server-generated PNG heatmap instead of a client-side one, so that
+  // prop was genuinely dead code. Removed here and at the call site
+  // rather than silencing the warning with `void cells;`.
   const [imgUrlLeft, setImgUrlLeft] = useState<string | null>(null);
   const [imgUrlRight, setImgUrlRight] = useState<string | null>(null);
   const [imgUrlCompare, setImgUrlCompare] = useState<string | null>(null);

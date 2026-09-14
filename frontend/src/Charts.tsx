@@ -142,14 +142,17 @@ export function BarChart({
   items,
   width = 560,
   height = 260,
-  valueKey = "value",
 }: {
   items: { label: string; value: number; color?: string }[];
   width?: number;
   height?: number;
-  valueKey?: string;
 }) {
-  void valueKey;
+  // `valueKey` used to be a prop here (meant to let callers point the
+  // chart at a differently-named field), but the render logic below
+  // always read `.value` directly regardless of what was passed — no
+  // caller ever used it, so it was dead code silenced with `void
+  // valueKey;` rather than genuinely wired up or removed. Removed
+  // cleanly since nothing in App.tsx passes it.
   if (!items.length) return <div className="muted">No strategies</div>;
   const pad = 28;
   const maxV = Math.max(...items.map((i) => i.value));
