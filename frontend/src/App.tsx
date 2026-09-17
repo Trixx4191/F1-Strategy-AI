@@ -187,6 +187,15 @@ export default function App() {
   const [strategyType, setStrategyType] = useState("Both");
   const [noise, setNoise] = useState(0.3);
   const [status, setStatus] = useState<Status>("idle");
+  // Separate from `status` above deliberately: `status` also tracks
+  // session-load state (set to "loading" while fetching track/timing data
+  // on race selection, before any simulation has run). The RUN button used
+  // to read `status === "loading"` directly, which meant simply selecting
+  // a race — no simulation involved at all — made the button show
+  // "RUNNING…" and disable itself, looking exactly like a simulation was
+  // running in the background when only lightweight session metadata was
+  // being fetched. This tracks the actual /api/simulate call specifically.
+  const [simRunning, setSimRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [session, setSession] = useState<SessionData | null>(null);
   const [sim, setSim] = useState<SimulateResult | null>(null);
@@ -390,7 +399,7 @@ export default function App() {
 
   const runSim = useCallback(async () => {
     if (!year || !race) return;
-    setStatus("loading"); setError(null);
+    setStatus("loading"); setError(null); setSimRunning(true);
     try {
       const result = await api.simulate({
         year, race, driver, rival,
@@ -410,6 +419,8 @@ export default function App() {
     } catch (e: unknown) {
       setStatus("error");
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSimRunning(false);
     }
   }, [year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, persistCurrentRun]);
 
@@ -562,8 +573,8 @@ export default function App() {
               onChange={(e) => setManualTemp(Number(e.target.value))} />
           </div>
         )}
-        <button className="btn-run" disabled={status === "loading" || !race} onClick={runSim}>
-          {status === "loading" ? "RUNNING…" : "▶  RUN SIMULATION"}
+        <button className="btn-run" disabled={simRunning || !race} onClick={runSim}>
+          {simRunning ? "RUNNING…" : "▶  RUN SIMULATION"}
         </button>
         <div className="sb-field" style={{ marginTop: 12 }}>
           <label>

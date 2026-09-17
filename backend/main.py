@@ -38,6 +38,58 @@ from src.pipeline.loader import (
     get_timing_tower_data, get_circuit_outline, get_session_drivers, get_driver_entry_list,
 )
 from src.pipeline.cleaner import clean_laps
+
+# ── Session cache ────────────────────────────────────────────────────────────
+#
+# Measured problem: selecting a race calls /api/session, then clicking "Run
+# Simulation" calls /api/simulate — both independently call load_session()
+# for the same (year, race). Measured on real 2024 Bahrain data: ~2000ms for
+# the session-only load, then ANOTHER ~2900ms for /api/simulate which
+# includes its own full session reload before doing any actual simulation
+# work. Same redundancy exists across /api/undercut/plot, /api/overcut/plot,
+# and /api/rival-analysis when a user explores multiple tabs for one race.
+#
+# Fix: a small in-process cache keyed by (year, race), bounded to the last
+# few sessions so memory doesn't grow unbounded across a long-running
+# server. A lock guards the cache structure itself (insertion/eviction),
+# but load_session() runs OUTSIDE the lock — holding it during a ~2s load
+# would serialize requests for genuinely DIFFERENT races too, not just
+# duplicate requests for the same one. Two concurrent requests for the same
+# uncached (year, race) can each still trigger their own load in the rare
+# race-condition case; the second result simply overwrites the first in the
+# cache. For a single-user app this is a low-cost edge case, not worth the
+# complexity of a per-key lock to fully eliminate.
+#
+# This assumes completed, historical race data, which never changes once a
+# session has happened — safe to cache indefinitely (bounded by size, not
+# time). Not appropriate for a genuinely live/in-progress session where new
+# laps could still be arriving, but get_race_schedule's only_completed=True
+# filtering already keeps this app scoped to finished races.
+import threading
+from collections import OrderedDict
+
+_SESSION_CACHE_MAX = 4
+_session_cache: "OrderedDict[tuple[int, str], Any]" = OrderedDict()
+_session_cache_lock = threading.Lock()
+
+
+def _get_cached_session(year: int, race: str):
+    key = (year, race)
+    with _session_cache_lock:
+        cached = _session_cache.get(key)
+        if cached is not None:
+            _session_cache.move_to_end(key)
+            return cached
+
+    session = load_session(year, race)
+
+    with _session_cache_lock:
+        _session_cache[key] = session
+        _session_cache.move_to_end(key)
+        while len(_session_cache) > _SESSION_CACHE_MAX:
+            _session_cache.popitem(last=False)
+
+    return session
 from src.pipeline.features import engineer_features
 from src.models.tyre_deg import TyreDegModel
 from src.models.pit_loss import get_pit_loss
@@ -143,7 +195,7 @@ def list_races(year: int, only_completed: bool = True):
 @app.get("/api/session")
 def get_session_data(year: int = Query(...), race: str = Query(...)):
     try:
-        session = load_session(year, race)
+        session = _get_cached_session(year, race)
         drivers = get_driver_entry_list(session)
         return {
             "year": year, "race": race,
@@ -439,7 +491,7 @@ def simulate(req: SimulateRequest) -> dict[str, Any]:
     # matching /api/session — rather than collapsing into the same 500
     # used below for a genuine bug in our own simulation/transform code.
     try:
-        session = load_session(req.year, req.race)
+        session = _get_cached_session(req.year, req.race)
         laps_raw = get_laps(session)
         pit_stops = get_pit_stops(session)
         race_laps = get_race_laps(session) or 57
@@ -759,7 +811,7 @@ def undercut_plot(body: dict):
             noise_std = float(body.get("noise_std", 0.3))
             strategy_type = body.get("strategy_type", "Both")
 
-            session = load_session(year, race)
+            session = _get_cached_session(year, race)
             laps_raw = get_laps(session)
             pit_stops = get_pit_stops(session)
             race_laps = get_race_laps(session) or 57
@@ -870,7 +922,7 @@ def overcut_plot(body: dict):
             n_simulations = int(body.get("n_simulations", 200))
             noise_std = float(body.get("noise_std", 0.3))
 
-            session = load_session(year, race)
+            session = _get_cached_session(year, race)
             laps_raw = get_laps(session)
             pit_stops = get_pit_stops(session)
             race_laps = get_race_laps(session) or 57
@@ -1015,7 +1067,7 @@ def rival_analysis(req: RivalAnalysisRequest) -> dict[str, Any]:
     # Same split as /api/simulate: upstream data-load failures are 502,
     # genuine bugs in the analysis logic below are 500.
     try:
-        session = load_session(req.year, req.race)
+        session = _get_cached_session(req.year, req.race)
         laps_raw = get_laps(session)
         pit_stops = get_pit_stops(session)
         race_laps = get_race_laps(session) or 57

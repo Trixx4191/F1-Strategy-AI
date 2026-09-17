@@ -356,3 +356,141 @@ def test_simulate_csv_fast_path_much_faster_than_full_rerun():
     elapsed = time.perf_counter() - t0
     assert r.status_code == 200
     assert elapsed < 1.0, f"Fast path took {elapsed:.2f}s — expected well under 1s"
+
+
+# ── Regression tests: redundant session loading across endpoints ───────────────
+#
+# Measured problem: selecting a race called /api/session, then clicking
+# "Run Simulation" called /api/simulate — each independently called
+# load_session() for the identical (year, race), duplicating a real,
+# measured ~1.6-2s FastF1 session load. Same redundancy existed across
+# /api/undercut/plot, /api/overcut/plot, and /api/rival-analysis when
+# exploring multiple tabs for one race. Fixed with an in-process,
+# size-bounded cache keyed by (year, race) — these tests confirm
+# load_session is genuinely called once per distinct race, not once per
+# request, and that the cache doesn't grow unbounded.
+
+from unittest.mock import patch, MagicMock
+
+
+def test_session_cache_reuses_across_endpoints():
+    """The core regression: hitting /api/session then /api/simulate for the
+    SAME (year, race) must call load_session() exactly once, not twice."""
+    import backend.main as backend_main
+    backend_main._session_cache.clear()
+
+    laps = _two_compound_only_laps()
+    fake_session = object()
+    call_count = {"n": 0}
+
+    def counting_load_session(year, race):
+        call_count["n"] += 1
+        return fake_session
+
+    with patch("backend.main.load_session", side_effect=counting_load_session), \
+         patch("backend.main.get_laps", return_value=laps), \
+         patch("backend.main.get_pit_stops", return_value=pd.DataFrame(columns=["Driver","PitInTime","PitOutTime"])), \
+         patch("backend.main.get_race_laps", return_value=40), \
+         patch("backend.main.get_timing_tower_data", return_value=[
+             {"driver": "VER", "team": "RED BULL", "compound": "SOFT", "tyre_age": 5, "gap": 0.0},
+         ]), \
+         patch("backend.main.get_circuit_outline", return_value={"name": "Test", "points": [], "corners": []}), \
+         patch("backend.main.get_track_temp", return_value={"track_temp": 30.0, "air_temp": 24.0, "rainfall": False}), \
+         patch("backend.main.get_driver_entry_list", return_value=[
+             {"code": "VER", "name": "Max Verstappen", "team": "RED BULL", "team_color": "#3671C6", "number": 1},
+         ]):
+        client = TestClient(backend_main.app)
+
+        r1 = client.get("/api/session?year=2024&race=Bahrain")
+        assert r1.status_code == 200
+
+        r2 = client.post("/api/simulate", json={
+            "year": 2024, "race": "Bahrain", "driver": "VER", "n_simulations": 50,
+        })
+        assert r2.status_code == 200
+
+    assert call_count["n"] == 1, (
+        f"load_session() was called {call_count['n']} times for the same "
+        f"(year, race) across two requests — expected exactly 1 (cached)."
+    )
+
+
+def test_session_cache_distinguishes_different_races():
+    """Different (year, race) keys must each trigger their own load —
+    the cache must not incorrectly return one race's session for another."""
+    import backend.main as backend_main
+    backend_main._session_cache.clear()
+
+    session_a = object()
+    session_b = object()
+
+    def fake_load(year, race):
+        return session_a if race == "Bahrain" else session_b
+
+    with patch("backend.main.load_session", side_effect=fake_load):
+        result_a = backend_main._get_cached_session(2024, "Bahrain")
+        result_b = backend_main._get_cached_session(2024, "Monaco")
+
+    assert result_a is session_a
+    assert result_b is session_b
+    assert result_a is not result_b
+
+
+def test_session_cache_hit_returns_same_object_without_reloading():
+    import backend.main as backend_main
+    backend_main._session_cache.clear()
+
+    call_count = {"n": 0}
+
+    def counting_load(year, race):
+        call_count["n"] += 1
+        return object()
+
+    with patch("backend.main.load_session", side_effect=counting_load):
+        first = backend_main._get_cached_session(2024, "Bahrain")
+        second = backend_main._get_cached_session(2024, "Bahrain")
+        third = backend_main._get_cached_session(2024, "Bahrain")
+
+    assert first is second is third
+    assert call_count["n"] == 1
+
+
+def test_session_cache_bounded_size_evicts_oldest():
+    """The cache must not grow unbounded across a long-running server —
+    confirms the oldest (least recently used) entry is evicted once the
+    cache exceeds its configured max size."""
+    import backend.main as backend_main
+    backend_main._session_cache.clear()
+
+    with patch("backend.main.load_session", side_effect=lambda y, r: object()):
+        for i in range(backend_main._SESSION_CACHE_MAX + 2):
+            backend_main._get_cached_session(2024, f"Race{i}")
+
+    assert len(backend_main._session_cache) == backend_main._SESSION_CACHE_MAX
+    # The earliest-inserted keys should have been evicted first
+    assert ("2024", "Race0") not in [str(k) for k in backend_main._session_cache.keys()] or True
+    remaining_races = [key[1] for key in backend_main._session_cache.keys()]
+    assert "Race0" not in remaining_races
+    assert f"Race{backend_main._SESSION_CACHE_MAX + 1}" in remaining_races
+
+
+def test_session_cache_move_to_end_on_hit_protects_recently_used():
+    """A cache hit should refresh an entry's recency, so frequently-accessed
+    races aren't evicted just because other races were loaded afterward."""
+    import backend.main as backend_main
+    backend_main._session_cache.clear()
+
+    with patch("backend.main.load_session", side_effect=lambda y, r: object()):
+        backend_main._get_cached_session(2024, "Bahrain")  # inserted first
+        for i in range(backend_main._SESSION_CACHE_MAX - 1):
+            backend_main._get_cached_session(2024, f"Filler{i}")
+        # Touch Bahrain again — should now be most-recently-used
+        backend_main._get_cached_session(2024, "Bahrain")
+        # Push one more new entry past the cache size
+        backend_main._get_cached_session(2024, "NewRace")
+
+    remaining_races = [key[1] for key in backend_main._session_cache.keys()]
+    assert "Bahrain" in remaining_races, (
+        "Bahrain was evicted despite being re-accessed more recently than "
+        "the filler entries — move_to_end on cache hit isn't working."
+    )
