@@ -105,9 +105,15 @@ f1-strategy-ai/
 │   ├── decisions.md         # Modelling and pipeline design choices
 │   ├── model_notes.md
 │   └── improvements.md
-├── .github/workflows/test.yml  # CI — runs full suite on push/PR
-├── Dockerfile
-├── docker-compose.yml
+├── .github/workflows/ci.yml    # CI — backend pytest, frontend build, Docker image build+smoke test
+├── backend/
+│   └── Dockerfile               # FastAPI service image
+├── frontend/
+│   ├── Dockerfile               # multi-stage build → nginx static serve
+│   └── nginx.conf
+├── docker-compose.yml            # primary stack: backend + frontend
+├── Dockerfile.streamlit          # Streamlit "quick local" alternative
+├── docker-compose.streamlit.yml  # (see "Run with Docker" below)
 └── data/cache/               # FastF1 HTTP cache (auto-populated)
 ```
 
@@ -203,11 +209,24 @@ Open `http://localhost:8501` — select a season, race, and driver in the sideba
 
 ### Run with Docker
 
+**Primary stack — FastAPI backend + React frontend:**
 ```bash
 docker compose up --build
 ```
+- Frontend: `http://localhost`
+- Backend: `http://localhost:8000/api/health`
 
-Dashboard available at `http://localhost:8501`. The FastF1 cache persists in a named volume across restarts.
+The FastF1 cache and generated plot cache both persist in named volumes
+across restarts. Deploying somewhere other than localhost? See the
+comments in `docker-compose.yml` and `frontend/Dockerfile` — the
+frontend's API base URL is baked in at *build* time, since it runs in the
+browser rather than inside the Docker network.
+
+**Alternative — lightweight Streamlit dashboard, no frontend build step:**
+```bash
+docker compose -f docker-compose.streamlit.yml up --build
+```
+Available at `http://localhost:8501`.
 
 ### Run tests
 

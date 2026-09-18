@@ -676,6 +676,7 @@ export default function App() {
                 rivalResult={rivalResult}
                 rivalBusy={rivalBusy}
                 year={year} race={race} driver={driver} raceLaps={raceLaps}
+                circuit={circuit}
                 rivalCompound={rivalCompound} setRivalCompound={setRivalCompound}
                 rivalTyreAge={rivalTyreAge} setRivalTyreAge={setRivalTyreAge}
                 gapToRival={gapToRival} setGapToRival={setGapToRival}
@@ -1408,13 +1409,12 @@ function UndercutTab({ strategies, raceLaps, year, race, driver, rival, nSims, s
 function RivalTab(props: any) {
   const {
     rival, fallbackRival, rivalResult, rivalBusy,
-    year, race, driver, raceLaps,
+    year, race, driver, raceLaps, circuit,
     rivalCompound, setRivalCompound, rivalTyreAge, setRivalTyreAge,
     gapToRival, setGapToRival, scanFrom, setScanFrom, scanTo, setScanTo,
     ourCompound, setOurCompound, ourTyreAge, setOurTyreAge,
     newCompound, setNewCompound, onRunRival,
   } = props;
-  void driver;
   const r = rivalResult || {};
   const underTL = r.undercut_timeline || rival?.undercut_timeline || [];
   const overTL = r.overcut_timeline || rival?.overcut_timeline || [];
@@ -1488,6 +1488,14 @@ function RivalTab(props: any) {
           </div>
         </div>
       )}
+
+      <RivalReplay
+        rivalResult={rivalResult}
+        circuit={circuit}
+        race={race}
+        driver={driver}
+        rivalCode={fallbackRival}
+      />
 
       <div className="panel">
         <div className="panel-header"><span className="title">Undercut EV Timeline</span></div>
@@ -1738,25 +1746,41 @@ function lapProgressAt(cumTimes: number[], lapTimes: number[], t: number): { lap
 // race time within the current lap; this is a strategy-comparison
 // visualization, not a frame-accurate telemetry replay (see docs/decisions.md
 // for the deliberate scope decision behind this vs full per-driver telemetry).
-function BacktestReplay({ backtest, circuit, race }: any) {
-  const actualLaps: number[] = backtest?.actual?.lap_times || [];
-  const optimalLaps: number[] = backtest?.optimal?.lap_times || [];
+// Generic two-car animated replay around the real circuit outline. Built
+// once here and reused by both BacktestReplay (Actual vs AI Optimal) and
+// RivalReplay (You vs a chosen rival) — the interpolation/animation logic
+// is identical between them, only the two lap-time series, labels, and
+// colors differ.
+function RaceReplay({
+  title, subtitle, resetKey, circuit,
+  aLabel, aLapTimes, aColor,
+  bLabel, bLapTimes, bColor,
+  emptyMessage,
+}: {
+  title: string;
+  subtitle: string;
+  resetKey: unknown; // reset+autoplay whenever this changes (e.g. a new result object)
+  circuit: any;
+  aLabel: string; aLapTimes: number[]; aColor: string;
+  bLabel: string; bLapTimes: number[]; bColor: string;
+  emptyMessage: string;
+}) {
   const points: { x: number; y: number }[] = circuit?.points || [];
 
-  const actualCum = useMemo(() => {
+  const aCum = useMemo(() => {
     const out = [0];
-    for (const lt of actualLaps) out.push(out[out.length - 1] + lt);
+    for (const lt of aLapTimes) out.push(out[out.length - 1] + lt);
     return out;
-  }, [actualLaps]);
-  const optimalCum = useMemo(() => {
+  }, [aLapTimes]);
+  const bCum = useMemo(() => {
     const out = [0];
-    for (const lt of optimalLaps) out.push(out[out.length - 1] + lt);
+    for (const lt of bLapTimes) out.push(out[out.length - 1] + lt);
     return out;
-  }, [optimalLaps]);
+  }, [bLapTimes]);
 
   const totalDuration = Math.max(
-    actualCum[actualCum.length - 1] || 0,
-    optimalCum[optimalCum.length - 1] || 0,
+    aCum[aCum.length - 1] || 0,
+    bCum[bCum.length - 1] || 0,
   );
 
   const [elapsed, setElapsed] = useState(0);
@@ -1765,13 +1789,13 @@ function BacktestReplay({ backtest, circuit, race }: any) {
   const rafRef = useRef<number | null>(null);
   const lastTsRef = useRef<number | null>(null);
 
-  // Reset and auto-play whenever a genuinely new backtest result arrives
-  // (a fresh simulation run) — not on every re-render.
+  // Reset and auto-play whenever a genuinely new result arrives — not on
+  // every re-render.
   useEffect(() => {
     setElapsed(0);
     setPlaying(true);
     lastTsRef.current = null;
-  }, [backtest]);
+  }, [resetKey]);
 
   useEffect(() => {
     if (!playing || totalDuration <= 0) {
@@ -1796,25 +1820,25 @@ function BacktestReplay({ backtest, circuit, race }: any) {
     return () => { if (rafRef.current != null) cancelAnimationFrame(rafRef.current); };
   }, [playing, speed, totalDuration]);
 
-  if (!points.length || !actualLaps.length || !optimalLaps.length) {
+  if (!points.length || !aLapTimes.length || !bLapTimes.length) {
     return (
       <div className="panel span-full">
-        <div className="panel-header"><span className="title">Race Replay</span></div>
+        <div className="panel-header"><span className="title">{title}</span></div>
         <div className="panel-body">
           <div className="muted">
             {!points.length
               ? "Circuit geometry not available for this session — replay needs the real track outline."
-              : "Backtest lap data unavailable for this driver/session."}
+              : emptyMessage}
           </div>
         </div>
       </div>
     );
   }
 
-  const actualState = lapProgressAt(actualCum, actualLaps, elapsed);
-  const optimalState = lapProgressAt(optimalCum, optimalLaps, elapsed);
-  const actualPos = interpolateAlongPath(points, actualState.progress);
-  const optimalPos = interpolateAlongPath(points, optimalState.progress);
+  const aState = lapProgressAt(aCum, aLapTimes, elapsed);
+  const bState = lapProgressAt(bCum, bLapTimes, elapsed);
+  const aPos = interpolateAlongPath(points, aState.progress);
+  const bPos = interpolateAlongPath(points, bState.progress);
 
   const pathD = `M ${points[0].x * 100} ${points[0].y * 100} ` +
     points.slice(1).map((p) => `L ${p.x * 100} ${p.y * 100}`).join(" ") + " Z";
@@ -1822,8 +1846,8 @@ function BacktestReplay({ backtest, circuit, race }: any) {
   return (
     <div className="panel span-full">
       <div className="panel-header">
-        <span className="title">Race Replay</span>
-        <span>{race} — Actual vs AI Optimal</span>
+        <span className="title">{title}</span>
+        <span>{subtitle}</span>
       </div>
       <div className="panel-body no-pad">
         <div className="replay-stage" style={{ position: "relative", width: "100%", background: "radial-gradient(ellipse at center, #0d0d0d 0%, #000 100%)" }}>
@@ -1831,12 +1855,12 @@ function BacktestReplay({ backtest, circuit, race }: any) {
             <path d={pathD} fill="none" stroke="#1a1a1a" strokeWidth="6" strokeLinejoin="round" strokeLinecap="round" />
             <path d={pathD} fill="none" stroke="#2c2c2c" strokeWidth="3.4" strokeLinejoin="round" strokeLinecap="round" />
             <path d={pathD} fill="none" stroke="#484848" strokeWidth="1" strokeLinejoin="round" strokeLinecap="round" />
-            <circle cx={actualPos.x * 100} cy={actualPos.y * 100} r={2.4} fill="#4c9be8" stroke="#000" strokeWidth="0.5" />
-            <circle cx={optimalPos.x * 100} cy={optimalPos.y * 100} r={2.4} fill="#e8002d" stroke="#000" strokeWidth="0.5" />
+            <circle cx={aPos.x * 100} cy={aPos.y * 100} r={2.4} fill={aColor} stroke="#000" strokeWidth="0.5" />
+            <circle cx={bPos.x * 100} cy={bPos.y * 100} r={2.4} fill={bColor} stroke="#000" strokeWidth="0.5" />
           </svg>
           <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 14px 10px", fontSize: "0.72rem" }}>
-            <span><span style={{ color: "#4c9be8" }}>●</span> Actual — Lap {actualState.lap}/{actualLaps.length}</span>
-            <span><span style={{ color: "#e8002d" }}>●</span> AI Optimal — Lap {optimalState.lap}/{optimalLaps.length}</span>
+            <span><span style={{ color: aColor }}>●</span> {aLabel} — Lap {aState.lap}/{aLapTimes.length}</span>
+            <span><span style={{ color: bColor }}>●</span> {bLabel} — Lap {bState.lap}/{bLapTimes.length}</span>
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 14px 12px" }}>
@@ -1883,6 +1907,40 @@ function BacktestReplay({ backtest, circuit, race }: any) {
         </div>
       </div>
     </div>
+  );
+}
+
+function BacktestReplay({ backtest, circuit, race }: any) {
+  return (
+    <RaceReplay
+      title="Race Replay"
+      subtitle={`${race} — Actual vs AI Optimal`}
+      resetKey={backtest}
+      circuit={circuit}
+      aLabel="Actual" aLapTimes={backtest?.actual?.lap_times || []} aColor="#4c9be8"
+      bLabel="AI Optimal" bLapTimes={backtest?.optimal?.lap_times || []} bColor="#e8002d"
+      emptyMessage="Backtest lap data unavailable for this driver/session."
+    />
+  );
+}
+
+// Rival replay: you vs the chosen rival, using the full-race lap-by-lap
+// trace from /api/rival-analysis's race_trace field (simulate_race_with_
+// rival — already existed in race_sim.py, just never wired into an
+// endpoint until this was added). Same RaceReplay machinery as the
+// Backtest tab, different data source.
+function RivalReplay({ rivalResult, circuit, race, driver, rivalCode }: any) {
+  const trace = rivalResult?.race_trace;
+  return (
+    <RaceReplay
+      title="Rival Replay"
+      subtitle={`${race} — ${driver} vs ${rivalCode}`}
+      resetKey={trace}
+      circuit={circuit}
+      aLabel={driver || "You"} aLapTimes={trace?.our_lap_times || []} aColor="#4c9be8"
+      bLabel={rivalCode || "Rival"} bLapTimes={trace?.rival_lap_times || []} bColor="#ff8000"
+      emptyMessage="Run the rival analysis to generate a race trace."
+    />
   );
 }
 

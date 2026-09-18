@@ -1,15 +1,69 @@
+# Primary stack — FastAPI backend + React frontend. This is the interface
+# the project's docs/frontend_react.md and README point to as the main
+# way to run the app.
+#
+# For the lightweight, no-build-step Streamlit alternative instead, use:
+#   docker compose -f docker-compose.streamlit.yml up --build
+#
+# Quick start:
+#   docker compose up --build
+#   → frontend: http://localhost
+#   → backend:  http://localhost:8000/api/health
+#
+# Deploying somewhere other than localhost? The frontend's API base URL
+# is baked in at BUILD time (see frontend/Dockerfile's VITE_API_URL
+# comment) — override it with:
+#   docker compose build --build-arg VITE_API_URL=https://your-api-host frontend
+# and set CORS_ORIGINS below to match wherever the frontend is actually
+# served from.
+
 services:
-  dashboard:
-    build: .
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     ports:
-      - "8501:8501"
+      - "8000:8000"
     volumes:
-      # Persist FastF1's HTTP cache across container restarts — without this,
-      # every `docker compose up` re-downloads session data from scratch.
+      # Persist FastF1's HTTP cache across container restarts — without
+      # this, every `docker compose up` re-downloads session data from
+      # scratch. Also holds the plot cache (see backend/main.py's
+      # PLOT_CACHE) so generated undercut/overcut/backtest PNGs survive
+      # restarts too.
       - fastf1-cache:/app/data/cache
+      - plot-cache:/app/outputs/plot_cache
     environment:
       - PYTHONPATH=/app
+      # Comma-separated list of origins allowed to call this API.
+      # Defaults (set in backend/main.py) already cover the frontend
+      # container's published port (80) and the Vite dev server (5173) —
+      # override here if serving the frontend from somewhere else.
+      - CORS_ORIGINS=http://localhost,http://localhost:80,http://localhost:5173
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        # Must be a URL the BROWSER can reach, not a Docker service name —
+        # see frontend/Dockerfile's comment on why. localhost:8000 works
+        # here because the backend service above publishes that port to
+        # the host, and the browser loads the frontend from the host too.
+        VITE_API_URL: http://localhost:8000
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   fastf1-cache:
+  plot-cache:

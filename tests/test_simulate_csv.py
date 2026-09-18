@@ -494,3 +494,79 @@ def test_session_cache_move_to_end_on_hit_protects_recently_used():
         "Bahrain was evicted despite being re-accessed more recently than "
         "the filler entries — move_to_end on cache hit isn't working."
     )
+
+
+# ── Regression test: rival replay race trace ────────────────────────────────
+#
+# simulate_race_with_rival() already existed in race_sim.py but was never
+# wired into any endpoint until the rival replay feature was added. This
+# confirms /api/rival-analysis's new race_trace field is present, correctly
+# shaped for the frontend's RaceReplay component, and internally consistent
+# (lap counts match, pit laps are within the simulated stint lengths).
+
+def test_rival_analysis_includes_race_trace():
+    from backend.main import app
+    laps = _two_compound_only_laps(n_laps=57)
+    client = TestClient(app)
+
+    with patch("backend.main.load_session", return_value=object()), \
+         patch("backend.main.get_laps", return_value=laps), \
+         patch("backend.main.get_pit_stops", return_value=pd.DataFrame(columns=["Driver","PitInTime","PitOutTime"])), \
+         patch("backend.main.get_race_laps", return_value=57), \
+         patch("backend.main.get_track_temp", return_value={"track_temp": 30.0, "air_temp": 24.0, "rainfall": False}):
+        r = client.post("/api/rival-analysis", json={
+            "year": 2024, "race": "Bahrain", "driver": "VER", "rival": "NOR",
+            "rival_compound": "HARD", "rival_tyre_age": 10, "gap_to_rival": 2.0,
+            "scan_from_lap": 20, "scan_to_lap": 30,
+            "our_compound": "SOFT", "our_tyre_age": 5, "new_compound": "HARD",
+            "n_simulations": 50, "run_h2h": False,
+        })
+
+    assert r.status_code == 200
+    trace = r.json()["race_trace"]
+    assert trace is not None
+
+    for key in ("our_lap_times", "rival_lap_times", "our_pit_laps", "rival_pit_laps", "final_gap", "we_won_position"):
+        assert key in trace
+
+    # Both cars race the same remaining distance (race_laps - scan_from_lap)
+    assert len(trace["our_lap_times"]) == len(trace["rival_lap_times"])
+    assert len(trace["our_lap_times"]) == 57 - 20
+
+    # Our pit lap should match the configured scan_from_lap (that's the
+    # "we pit right at the window start" assumption the replay uses)
+    assert trace["our_pit_laps"] == [20]
+
+    # Pit laps must fall within the simulated race length, not point past it
+    for lap in trace["our_pit_laps"] + trace["rival_pit_laps"]:
+        assert 0 < lap < 57
+
+
+def test_race_trace_degrades_to_none_on_failure_not_500():
+    """A failure building the race trace (e.g. an edge-case strategy
+    construction issue) should degrade the race_trace field to None rather
+    than breaking the rest of the already-computed undercut/overcut/H2H
+    response — matches the same fail-soft pattern used for the H2H block."""
+    from backend.main import app
+    laps = _two_compound_only_laps(n_laps=57)
+    client = TestClient(app)
+
+    with patch("backend.main.load_session", return_value=object()), \
+         patch("backend.main.get_laps", return_value=laps), \
+         patch("backend.main.get_pit_stops", return_value=pd.DataFrame(columns=["Driver","PitInTime","PitOutTime"])), \
+         patch("backend.main.get_race_laps", return_value=57), \
+         patch("backend.main.get_track_temp", return_value={"track_temp": 30.0, "air_temp": 24.0, "rainfall": False}), \
+         patch("backend.main.simulate_race_with_rival", side_effect=RuntimeError("boom")):
+        r = client.post("/api/rival-analysis", json={
+            "year": 2024, "race": "Bahrain", "driver": "VER", "rival": "NOR",
+            "rival_compound": "HARD", "rival_tyre_age": 10, "gap_to_rival": 2.0,
+            "scan_from_lap": 20, "scan_to_lap": 30,
+            "our_compound": "SOFT", "our_tyre_age": 5, "new_compound": "HARD",
+            "n_simulations": 50, "run_h2h": False,
+        })
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["race_trace"] is None
+    # The rest of the response must still be intact
+    assert len(body["undercut_timeline"]) > 0

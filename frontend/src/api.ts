@@ -192,6 +192,14 @@ export type RivalAnalysisResult = {
   scan_to_lap: number;
   pit_loss: number;
   race_laps: number;
+  race_trace: {
+    our_lap_times: number[];
+    rival_lap_times: number[];
+    our_pit_laps: number[];
+    rival_pit_laps: number[];
+    final_gap: number;
+    we_won_position: boolean;
+  } | null;
 };
 
 
