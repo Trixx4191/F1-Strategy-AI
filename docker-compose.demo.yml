@@ -1,0 +1,23 @@
+# Isolated from Tidewatch: unique Compose project, port, image, and resources.
+name: f1-strategy-demo
+services:
+  app:
+    image: f1-strategy-demo:local
+    build:
+      context: .
+      dockerfile: Dockerfile.aws
+    ports:
+      - "127.0.0.1:${F1_PORT:-8100}:8000"
+    restart: unless-stopped
+    mem_limit: 1536m
+    cpus: 1.0
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -204,6 +204,7 @@ export type RivalAnalysisResult = {
 
 
 export const api = {
+  demoRun: () => req<SimulateResult>("/api/demo/run"),
   health: () => req<{ status: string }>("/api/health"),
   latestSeason: () => req<{ year: number }>("/api/seasons/latest"),
   races: (year: number) =>

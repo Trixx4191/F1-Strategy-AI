@@ -1,0 +1,33 @@
+[Unit]
+Description=F1 Strategy AI demo
+After=network.target
+
+[Service]
+Type=simple
+User=f1strategy
+Group=f1strategy
+WorkingDirectory=/opt/f1-strategy-ai/current
+Environment=F1_DEMO_MODE=true
+Environment=PYTHONPATH=/opt/f1-strategy-ai/current
+Environment=MPLCONFIGDIR=/var/lib/f1-strategy-ai/matplotlib
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=OMP_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/f1-strategy-ai/venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8100 --limit-concurrency 8
+Restart=on-failure
+RestartSec=5
+MemoryHigh=640M
+MemoryMax=768M
+CPUQuota=70%
+TasksMax=64
+Nice=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/f1-strategy-ai
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

@@ -6,6 +6,7 @@ All downstream modules receive clean DataFrames from here.
 """
 
 import fastf1
+import os
 import pandas as pd
 from pathlib import Path
 from src.utils.config import CACHE_DIR, YEAR, RACE, SESSION
@@ -37,6 +38,11 @@ def load_session(year: int = YEAR,
     -------
     fastf1.core.Session — fully loaded session object
     """
+    if os.getenv("F1_DEMO_MODE") == "true":
+        if (year, race, session_type) != (2024, "Bahrain", "R"):
+            raise ValueError("Demo mode includes the 2024 Bahrain race only")
+        from src.pipeline.demo import load_demo_session
+        return load_demo_session()
     enable_cache()
     log.info(f"Loading {year} {race} — session: {session_type}")
     session = fastf1.get_session(year, race, session_type)
@@ -85,6 +91,8 @@ def get_race_schedule(year: int, only_completed: bool = True) -> list[str]:
     Returns a list of event names in calendar order (e.g. ["Bahrain", "Saudi Arabia", ...]).
     Falls back to a hardcoded 2024 list if the API call fails so the UI never breaks.
     """
+    if os.getenv("F1_DEMO_MODE") == "true":
+        return ["Bahrain"] if year == 2024 else []
     try:
         schedule = fastf1.get_event_schedule(year, include_testing=False)
 
@@ -117,6 +125,8 @@ def get_latest_available_year() -> int:
     This means the dashboard's season selector never needs a manual
     yearly bump — it tracks whatever FastF1 currently has data for.
     """
+    if os.getenv("F1_DEMO_MODE") == "true":
+        return 2024
     from datetime import date
     this_year = date.today().year
     try:
@@ -391,6 +401,8 @@ def get_circuit_outline(session: fastf1.core.Session) -> dict:
       }
     Empty points if geometry is unavailable for that session.
     """
+    if hasattr(session, "demo_circuit"):
+        return session.demo_circuit
     out = {"name": "", "points": [], "corners": []}
     try:
         event = getattr(session, "event", None)

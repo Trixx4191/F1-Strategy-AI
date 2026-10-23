@@ -172,15 +172,15 @@ def simulate_race_with_rival(
     rival_laps = rival_laps[:n]
 
     # Compute cumulative gap per lap
-    # gap[i] = initial_gap + sum(rival_lap_times[:i]) - sum(our_lap_times[:i])
+    # gap[i] = initial_gap + sum(our_lap_times[:i]) - sum(rival_lap_times[:i])
     # Positive gap = rival is ahead (they started ahead and this compounds)
     gap_per_lap: list[float] = []
     cumulative_gap = initial_gap
 
     for i in range(n):
-        # Each lap: gap changes by (rival's lap time - our lap time)
+        # Each lap: gap changes by (our lap time - rival's lap time)
         # If rival runs a slower lap, the gap closes (positive → smaller)
-        cumulative_gap += rival_laps[i] - our_laps[i]
+        cumulative_gap += our_laps[i] - rival_laps[i]
         gap_per_lap.append(round(cumulative_gap, 4))
 
     final_gap = gap_per_lap[-1] if gap_per_lap else initial_gap

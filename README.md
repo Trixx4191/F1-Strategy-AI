@@ -173,6 +173,15 @@ Reconstructs what the selected driver actually did that race — compound sequen
 
 ## Quickstart
 
+### AWS demo
+
+The public demo runs on AWS with bundled Bahrain 2024 race data and a preloaded
+simulation, while retaining interactive simulation and analysis controls.
+Deployment, isolation from Tidewatch, and rollback instructions are in
+[`docs/aws-demo.md`](docs/aws-demo.md).
+
+**Demo:** https://d2s2fm4gy9s0l9.cloudfront.net
+
 ### Prerequisites
 
 - Python 3.11+

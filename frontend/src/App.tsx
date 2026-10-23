@@ -209,12 +209,12 @@ export default function App() {
   const [rivalResult, setRivalResult] = useState<RivalAnalysisResult | null>(null);
   const [rivalBusy, setRivalBusy] = useState(false);
   // Interactive rival params (dashboard Tab 5)
-  const [rivalCompound, setRivalCompound] = useState("MEDIUM");
+  const [rivalCompound, setRivalCompound] = useState(import.meta.env.VITE_DEMO_MODE === "true" ? "HARD" : "MEDIUM");
   const [rivalTyreAge, setRivalTyreAge] = useState(10);
   const [gapToRival, setGapToRival] = useState(2.0);
   const [scanFrom, setScanFrom] = useState(15);
   const [scanTo, setScanTo] = useState(30);
-  const [ourCompound, setOurCompound] = useState("MEDIUM");
+  const [ourCompound, setOurCompound] = useState(import.meta.env.VITE_DEMO_MODE === "true" ? "SOFT" : "MEDIUM");
   const [ourTyreAge, setOurTyreAge] = useState(10);
   const [newCompound, setNewCompound] = useState("HARD");
 
@@ -224,8 +224,8 @@ export default function App() {
     const storedSaves = readFromStorage<SavedRun[]>(STORAGE_KEYS.saved);
 
     if (storedUi) {
-      setYear(storedUi.year || 2024);
-      setRace(storedUi.race || "");
+      setYear(import.meta.env.VITE_DEMO_MODE === "true" ? 2024 : storedUi.year || 2024);
+      setRace(import.meta.env.VITE_DEMO_MODE === "true" ? "Bahrain" : storedUi.race || "");
       setDriver(storedUi.driver || "VER");
       setRival(storedUi.rival || "NOR");
       setNSims(storedUi.nSims || 500);
@@ -258,7 +258,11 @@ export default function App() {
     }
 
     setHasHydrated(true);
-    api.latestSeason().then((r) => { setLatestYear(r.year); setYear((prev) => prev || r.year); }).catch(() => {});
+    api.latestSeason().then((r) => {
+      setLatestYear(r.year);
+      setYear((prev) => import.meta.env.VITE_DEMO_MODE === "true" ? 2024 : prev || r.year);
+      if (import.meta.env.VITE_DEMO_MODE === "true") setRace("Bahrain");
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -300,7 +304,7 @@ export default function App() {
           "an old saved run, or turn off auto-save, and try again."
         );
       }
-    } else {
+    } else if (!autoPersist) {
       removeFromStorage(STORAGE_KEYS.current);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -335,11 +339,28 @@ export default function App() {
 
   useEffect(() => {
     if (!year || !race) return;
+    let active = true;
     setStatus("loading"); setError(null); setSim(null);
     api.session(year, race)
       .then((data) => {
+        if (!active) return;
         setSession(data);
         setStatus("idle");
+        if (import.meta.env.VITE_DEMO_MODE === "true" && year === 2024 && race === "Bahrain") {
+          const saved = readFromStorage<PersistedCurrentRun>(STORAGE_KEYS.current);
+          const initialRun = saved?.result?.year === year && saved.result.race === race
+            ? Promise.resolve(saved.result) : api.demoRun();
+          initialRun.then((result) => {
+            if (!active) return;
+            setSim(result);
+            setDriver(result.driver);
+            if (!saved?.result) {
+              setRival("NOR"); setNSims(500); setStrategyType("Both");
+              setNoise(0.3); setUseLiveTemp(true);
+            }
+            setStatus("ready");
+          }).catch(() => {});
+        }
         const codes = (data.drivers || []).map((d) => d.code);
         if (codes.length) {
           if (!codes.includes(driver)) setDriver(codes[0]);
@@ -348,7 +369,8 @@ export default function App() {
           }
         }
       })
-      .catch((e) => { setSession(null); setStatus("error"); setError(String(e.message || e)); });
+      .catch((e) => { if (active) { setSession(null); setStatus("error"); setError(String(e.message || e)); } });
+    return () => { active = false; };
   }, [year, race]);
 
   const persistCurrentRun = useCallback((result: SimulateResult) => {
@@ -506,9 +528,16 @@ export default function App() {
           <h1>F1 <span>STRATEGY</span></h1>
         </div>
         <div className="sb-section">Session</div>
+        {import.meta.env.VITE_DEMO_MODE === "true" && (
+          <p className="sb-field" style={{ fontSize: 12, lineHeight: 1.5 }}>
+            Historical demo · Bahrain 2024. A completed run loads automatically.
+            Change drivers or settings and run a fresh simulation to explore.
+            Track replay illustrates modelled pace, not recorded car positions.
+          </p>
+        )}
         <div className="sb-field">
           <label>Season</label>
-          <select value={year} onChange={(e) => setYear(Number(e.target.value))}>
+          <select value={year} disabled={import.meta.env.VITE_DEMO_MODE === "true"} onChange={(e) => setYear(Number(e.target.value))}>
             {yearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
         </div>

@@ -25,6 +25,9 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+import os
 from pydantic import BaseModel, Field
 import io, csv, json, hashlib
 
@@ -98,7 +101,7 @@ from src.simulator.strategy import (
     generate_one_stop_strategies, generate_two_stop_strategies,
 )
 from src.simulator.monte_carlo import run_monte_carlo, run_rival_monte_carlo
-from src.simulator.race_sim import simulate_race
+from src.simulator.race_sim import simulate_race, simulate_race_with_rival
 from src.simulator.rival import RivalState, scan_undercut_window, scan_overcut_window
 from src.utils.config import COMPOUNDS
 from src.utils.config import OUTPUTS_DIR
@@ -137,6 +140,14 @@ class SimulateRequest(BaseModel):
 @app.get("/api/health")
 def health():
     return {"status": "ok", "service": "f1-strategy-ai"}
+
+
+@app.get("/api/demo/run")
+def demo_run():
+    path = ROOT / "data/demo/default-run.json"
+    if os.getenv("F1_DEMO_MODE") != "true" or not path.exists():
+        raise HTTPException(404, detail="Precomputed demo is unavailable")
+    return FileResponse(path, media_type="application/json")
 
 
 # Simple on-disk cache for generated plots
@@ -1185,6 +1196,28 @@ def rival_analysis(req: RivalAnalysisRequest) -> dict[str, Any]:
             except Exception:
                 traceback.print_exc()
 
+        race_trace = None
+        try:
+            # Simulate the window's remaining distance. Our car pits at its
+            # start; the rival continues for half the remaining race.
+            remaining = race_laps - from_lap
+            rival_stay = max(1, remaining // 2)
+            rival_next = _pick_switch_compound(deg_model, req.rival_compound.upper())
+            our_strategy = Strategy([Stint(req.new_compound.upper(), remaining)])
+            rival_strategy = Strategy([
+                Stint(req.rival_compound.upper(), rival_stay),
+                Stint(rival_next or req.new_compound.upper(), remaining - rival_stay),
+            ])
+            race_trace = simulate_race_with_rival(
+                our_strategy, rival_strategy, deg_model, pit_loss,
+                initial_gap=req.gap_to_rival + pit_loss,
+            )
+            # Initial stop happens immediately, before the first remaining lap.
+            race_trace["our_pit_laps"] = [from_lap]
+            race_trace["rival_pit_laps"] = [from_lap + p for p in race_trace["rival_pit_laps"]]
+        except Exception:
+            traceback.print_exc()
+
         return {
             "rival": req.rival,
             "driver": req.driver,
@@ -1194,6 +1227,7 @@ def rival_analysis(req: RivalAnalysisRequest) -> dict[str, Any]:
             "best_overcut": best_o,
             "recommendation": recommendation,
             "h2h": h2h_rows,
+            "race_trace": race_trace,
             "scan_from_lap": from_lap,
             "scan_to_lap": to_lap,
             "pit_loss": pit_loss,
@@ -1211,6 +1245,10 @@ def rival_analysis(req: RivalAnalysisRequest) -> dict[str, Any]:
         traceback.print_exc()
         raise HTTPException(500, detail=f"Rival analysis failed: {e}")
 
+
+# Register static files after API routes, preserving a single browser origin.
+if (ROOT / "frontend/dist").is_dir():
+    app.mount("/", StaticFiles(directory=ROOT / "frontend/dist", html=True), name="frontend")
 
 if __name__ == "__main__":
     import uvicorn
