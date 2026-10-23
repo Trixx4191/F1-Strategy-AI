@@ -102,3 +102,15 @@ For rollback, restore `/opt/f1-strategy-ai/current` to the path recorded in
 `/opt/f1-strategy-ai/previous-release`, then restart **only** `f1-strategy`.
 The virtual environment is shared between F1 releases; dependency changes may
 also require reinstalling the previous release's runtime requirements.
+
+## Verification — 23 October 2026
+
+- 122 backend tests passed; the React production build passed.
+- Public HTTPS smoke checks passed for the frontend, health, season/race list,
+  session geometry and 20-driver timing tower, precomputed run, fresh simulation,
+  CSV export, rival analysis/replay, and four PNG plot endpoints.
+- Active release: `ce6422ec53e1`.
+- Tidewatch retained its original process ID, running since 06:59 UTC, and its
+  service/nginx file hashes matched the pre-deployment baseline. Its original
+  IP route and health endpoint remained operational.
+- F1 service used approximately 140 MB RAM before the final simulation checks.

@@ -180,7 +180,7 @@ simulation, while retaining interactive simulation and analysis controls.
 Deployment, isolation from Tidewatch, and rollback instructions are in
 [`docs/aws-demo.md`](docs/aws-demo.md).
 
-**Demo:** https://d2s2fm4gy9s0l9.cloudfront.net
+[Open the AWS demo](https://d2s2fm4gy9s0l9.cloudfront.net)
 
 ### Prerequisites
 
