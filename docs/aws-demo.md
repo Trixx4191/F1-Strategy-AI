@@ -59,6 +59,8 @@ the exported JSON only. No Python pickle or HTTP cache is shipped.
 
 Public URL: **https://d2s2fm4gy9s0l9.cloudfront.net**
 
+Current release: **`a17ecf837cc9`** — UI refresh, 24 October 2026.
+
 AWS profile: `sha`; region: `eu-north-1`. The native Python service shares the
 existing Lightsail VM with Tidewatch. It has its own
 user (`f1strategy`), virtual environment, releases in `/opt/f1-strategy-ai`, data
@@ -131,3 +133,37 @@ passed. No affected PHP runtime was identified, so no PHP update was needed.
 This check covers the shared host at that time, not other account resources or
 software installed later. The temporary single-IP SSH rule used for this audit
 was removed afterward, preserving the original SSH allowlist.
+
+
+## UI deployment verification — 24 October 2026
+
+Release `a17ecf837cc9` replaced `ce6422ec53e1` using the existing allowlisted
+release installer. The archive SHA256 was verified on the VM before installation:
+`a17ecf837cc982f05dcec695d6cc72efb053a5a1171038effb629e5ec435d1a8`.
+No runtime dependencies changed; the installer found the pinned requirements
+already satisfied. Only the F1 application service was restarted.
+
+- All 122 backend tests passed, frontend helper checks passed, and the demo
+  production build passed TypeScript checking and Vite bundling.
+- Chromium checks passed locally and against the public CloudFront URL:
+  chronological tyre stints, no automatic analysis POST requests, all eight
+  tabs, search/filter/pagination, complete CSV download, fresh simulation,
+  rival analysis, saving/comparing/loading runs, changed-settings notices,
+  replay controls, mobile settings, and reload persistence.
+- Browser checks covered desktop, 1024, 768, 390, and 320-pixel layouts, with
+  no page-level horizontal overflow, browser exceptions, or failed app requests.
+- The documented API smoke script passed all checks, including fresh simulation,
+  CSV, rival analysis, and all four PNG endpoints.
+- F1 was active with zero automatic restarts and no error-level journal entries
+  after the live browser checks. Its reported memory use at that point was
+  approximately 197 MiB.
+- Tidewatch retained PID `36365`, active since 23 October at 06:59:44 UTC.
+  Hashes of its systemd unit and all nginx site files matched the pre-deployment
+  baseline. Its original nginx `/api/health` route remained operational.
+- The temporary SSH rule for the deployment IP was removed; the original
+  single-IP SSH allowlist was preserved.
+
+The previous release remains available at
+`/opt/f1-strategy-ai/releases/ce6422ec53e1` and is recorded in
+`/opt/f1-strategy-ai/previous-release` for rollback. See
+[UI refresh notes](ui-refresh.md) for the detailed design and behaviour changes.
