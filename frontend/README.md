@@ -1,35 +1,32 @@
-# F1 Strategy frontend
+# React + TypeScript + Vite
 
-React and TypeScript application served by the FastAPI backend in production.
-The AWS demo is restricted to the bundled 2024 Bahrain race.
+This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
 
-```sh
-npm ci
-npm run dev
+Currently, two official plugins are available:
+
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+
+## React Compiler
+
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+
+## Expanding the Oxlint configuration
+
+If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+
+```json
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["react", "typescript", "oxc"],
+  "options": {
+    "typeAware": true
+  },
+  "rules": {
+    "react/rules-of-hooks": "error",
+    "react/only-export-components": ["warn", { "allowConstantExport": true }]
+  }
+}
 ```
 
-The Vite development server forwards `/api` to `http://127.0.0.1:8000`.
-Start the backend from the repository root:
-
-```sh
-F1_DEMO_MODE=true venv/bin/python -m uvicorn backend.main:app --port 8000
-```
-
-For the deployed demo build:
-
-```sh
-VITE_DEMO_MODE=true npm run build
-npm test
-```
-
-`npm test` checks chronological tyre sequences and race-time formatting using
-Node's built-in test runner and TypeScript stripping (Node 22.6 or newer).
-
-`App.tsx` owns the simulation settings, completed-run state, tab navigation,
-and browser-local saves. Only the active tab mounts. `Charts.tsx` renders SVG
-charts from completed results; opening analysis tabs does not run simulations.
-`f1ui.ts` provides compound styling, ordered stint extraction, and time formatting.
-`index.css` defines the shared layout and responsive breakpoints.
-
-See [UI refresh notes](../docs/ui-refresh.md) for the design decisions and checks,
-and [AWS deployment notes](../docs/aws-demo.md) for release and rollback steps.
+See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.

@@ -13,8 +13,7 @@ const TRACE_COLORS = ["#e8002d", "#00d2be", "#ffd700", "#4c9be8"];
 type Pt = { x: number; y: number };
 
 function scale(pts: Pt[], w: number, h: number, pad = 28) {
-  if (!pts.length)
-    return { sx: (_x: number) => 0, sy: (_y: number) => 0, minY: 0, maxY: 1 };
+  if (!pts.length) return { sx: (_x: number) => 0, sy: (_y: number) => 0, minY: 0, maxY: 1 };
   const xs = pts.map((p) => p.x);
   const ys = pts.map((p) => p.y);
   const minX = Math.min(...xs);
@@ -54,43 +53,20 @@ export function LineChart({
   }
   const { sx, sy, minY, maxY } = scale(all, width, height);
   return (
-    <svg
-      viewBox={`0 0 ${width} ${height}`}
-      width="100%"
-      style={{ maxHeight: height }}
-    >
+    <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ maxHeight: height }}>
       {/* grid */}
       {[0.25, 0.5, 0.75].map((t) => {
         const y = height * t;
         return (
-          <line
-            key={t}
-            x1={28}
-            x2={width - 28}
-            y1={y}
-            y2={y}
-            stroke="#30363d"
-            strokeWidth={1}
-          />
+          <line key={t} x1={28} x2={width - 28} y1={y} y2={y} stroke="#1e1e1e" strokeWidth={1} />
         );
       })}
       {series.map((s) => {
         if (s.points.length < 2) return null;
         const d = s.points
-          .map(
-            (p, i) =>
-              `${i === 0 ? "M" : "L"} ${sx(p.x).toFixed(1)} ${sy(p.y).toFixed(1)}`,
-          )
+          .map((p, i) => `${i === 0 ? "M" : "L"} ${sx(p.x).toFixed(1)} ${sy(p.y).toFixed(1)}`)
           .join(" ");
-        return (
-          <path
-            key={s.name}
-            d={d}
-            fill="none"
-            stroke={s.color}
-            strokeWidth={2}
-          />
-        );
+        return <path key={s.name} d={d} fill="none" stroke={s.color} strokeWidth={2} />;
       })}
       {cliffMarks.map((m, i) => (
         <g key={i}>
@@ -104,31 +80,19 @@ export function LineChart({
             strokeDasharray="4 3"
             opacity={0.8}
           />
-          <text
-            x={sx(m.x) + 3}
-            y={40}
-            fill={m.color}
-            fontSize={10}
-            fontFamily="system-ui"
-          >
+          <text x={sx(m.x) + 3} y={40} fill={m.color} fontSize={10} fontFamily="Titillium Web">
             {m.label || `cliff ${m.x.toFixed(0)}`}
           </text>
         </g>
       ))}
-      <text
-        x={width / 2}
-        y={height - 6}
-        textAnchor="middle"
-        fill="#a5adb7"
-        fontSize={10}
-      >
+      <text x={width / 2} y={height - 6} textAnchor="middle" fill="#555" fontSize={10}>
         {xLabel}
       </text>
       <text
         x={12}
         y={height / 2}
         textAnchor="middle"
-        fill="#a5adb7"
+        fill="#555"
         fontSize={10}
         transform={`rotate(-90 12 ${height / 2})`}
       >
@@ -138,13 +102,7 @@ export function LineChart({
       {series.map((s, i) => (
         <g key={s.name} transform={`translate(${40 + i * 90}, 14)`}>
           <rect width={12} height={3} y={-2} fill={s.color} />
-          <text
-            x={16}
-            y={2}
-            fill="#a5adb7"
-            fontSize={10}
-            fontFamily="system-ui"
-          >
+          <text x={16} y={2} fill="#aaa" fontSize={10} fontFamily="Titillium Web">
             {s.name}
           </text>
         </g>
@@ -166,31 +124,14 @@ export function ScatterChart({
   const { sx, sy } = scale(
     points.map((p) => ({ x: p.x, y: p.y })),
     width,
-    height,
+    height
   );
   return (
-    <svg
-      viewBox={`0 0 ${width} ${height}`}
-      width="100%"
-      style={{ maxHeight: height }}
-    >
+    <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ maxHeight: height }}>
       {points.map((p, i) => (
-        <circle
-          key={i}
-          cx={sx(p.x)}
-          cy={sy(p.y)}
-          r={3}
-          fill={p.color}
-          opacity={0.75}
-        />
+        <circle key={i} cx={sx(p.x)} cy={sy(p.y)} r={3} fill={p.color} opacity={0.75} />
       ))}
-      <text
-        x={width / 2}
-        y={height - 6}
-        textAnchor="middle"
-        fill="#a5adb7"
-        fontSize={10}
-      >
+      <text x={width / 2} y={height - 6} textAnchor="middle" fill="#555" fontSize={10}>
         Tyre age (laps)
       </text>
     </svg>
@@ -200,65 +141,52 @@ export function ScatterChart({
 export function BarChart({
   items,
   width = 560,
-  height = 320,
-  unit = "",
+  height = 260,
 }: {
   items: { label: string; value: number; color?: string }[];
   width?: number;
   height?: number;
-  unit?: string;
 }) {
+  // `valueKey` used to be a prop here (meant to let callers point the
+  // chart at a differently-named field), but the render logic below
+  // always read `.value` directly regardless of what was passed — no
+  // caller ever used it, so it was dead code silenced with `void
+  // valueKey;` rather than genuinely wired up or removed. Removed
+  // cleanly since nothing in App.tsx passes it.
   if (!items.length) return <div className="muted">No strategies</div>;
-  const max = Math.max(...items.map((item) => Math.abs(item.value)), 1);
-  const labelWidth = 150;
-  const rowHeight = (height - 20) / items.length;
-  const usableWidth = width - labelWidth - 75;
+  const pad = 28;
+  const maxV = Math.max(...items.map((i) => i.value));
+  const minV = Math.min(...items.map((i) => i.value));
+  const span = Math.max(maxV - minV, 1e-9);
+  const barW = Math.max(6, (width - 2 * pad) / items.length - 4);
   return (
-    <svg
-      viewBox={`0 0 ${width} ${height}`}
-      width="100%"
-      role="img"
-      aria-label={`Strategy comparison in ${unit || "values"}`}
-    >
-      {items.map((item, index) => {
-        const y = index * rowHeight + 10;
-        const barWidth = Math.max(
-          2,
-          (Math.abs(item.value) / max) * usableWidth,
-        );
+    <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ maxHeight: height }}>
+      {items.map((it, i) => {
+        const h = ((it.value - minV) / span) * (height - 2 * pad) * 0.9 + 4;
+        const x = pad + i * ((width - 2 * pad) / items.length);
+        const y = height - pad - h;
         return (
-          <g key={index}>
-            <title>
-              {item.label}: {item.value.toFixed(2)} {unit}
-            </title>
-            <text
-              x={0}
-              y={y + rowHeight / 2 + 3}
-              fill="#a5adb7"
-              fontSize={11}
-              fontFamily="monospace"
-            >
-              {item.label.slice(0, 22)}
-            </text>
+          <g key={i}>
             <rect
-              x={labelWidth}
-              y={y + rowHeight * 0.18}
-              width={barWidth}
-              height={rowHeight * 0.64}
-              rx={2}
-              fill={item.color || "#ee6258"}
-              opacity={0.8}
+              x={x}
+              y={y}
+              width={barW}
+              height={h}
+              fill={it.color || "#e8002d"}
+              opacity={0.85}
             />
-            <text
-              x={labelWidth + barWidth + 8}
-              y={y + rowHeight / 2 + 3}
-              fill="#f0f2f4"
-              fontSize={11}
-              fontFamily="monospace"
-            >
-              {item.value.toFixed(2)}
-              {unit}
-            </text>
+            {i % Math.ceil(items.length / 12) === 0 && (
+              <text
+                x={x + barW / 2}
+                y={height - 8}
+                textAnchor="middle"
+                fill="#555"
+                fontSize={8}
+                transform={`rotate(-40 ${x + barW / 2} ${height - 8})`}
+              >
+                {it.label.slice(0, 14)}
+              </text>
+            )}
           </g>
         );
       })}
@@ -269,17 +197,11 @@ export function BarChart({
 export function HeatStrip({
   cells,
 }: {
-  cells: {
-    pit_lap: number | null;
-    mean_time: number | null;
-    pair: string;
-    win_rate: number | null;
-  }[];
+  cells: { pit_lap: number | null; mean_time: number | null; pair: string; win_rate: number | null }[];
 }) {
   const valid = cells.filter((c) => c.pit_lap != null && c.mean_time != null);
-  if (!valid.length)
-    return <div className="muted">No 1-stop data for heatmap</div>;
-  const times = valid.map((c) => c.mean_time!);
+  if (!valid.length) return <div className="muted">No 1-stop data for heatmap</div>;
+  const times = valid.map((c) => c.mean_time!) ;
   const minT = Math.min(...times);
   const maxT = Math.max(...times);
   const byLap = new Map<number, typeof valid>();
@@ -295,7 +217,7 @@ export function HeatStrip({
         {laps.map((lap) => {
           const group = byLap.get(lap)!;
           const best = group.reduce((a, b) =>
-            (a.mean_time ?? 1e9) < (b.mean_time ?? 1e9) ? a : b,
+            (a.mean_time ?? 1e9) < (b.mean_time ?? 1e9) ? a : b
           );
           const t = best.mean_time!;
           const norm = (t - minT) / Math.max(maxT - minT, 1e-9);
@@ -327,8 +249,7 @@ export function HeatStrip({
         })}
       </div>
       <div className="muted" style={{ marginTop: 6 }}>
-        Pit lap → color = relative race time (green faster · red slower). Hover
-        for pair details.
+        Pit lap → color = relative race time (green faster · red slower). Hover for pair details.
       </div>
     </div>
   );
@@ -339,13 +260,7 @@ export function EvTimeline({
   color,
   label,
 }: {
-  points: {
-    lap: number;
-    mean_ev: number;
-    p10_ev: number;
-    p90_ev: number;
-    recommend: boolean;
-  }[];
+  points: { lap: number; mean_ev: number; p10_ev: number; p90_ev: number; recommend: boolean }[];
   color: string;
   label: string;
 }) {
@@ -360,21 +275,12 @@ export function EvTimeline({
   // band as extra series roughly
   return (
     <div>
-      <LineChart
-        series={series}
-        xLabel="Candidate pit lap"
-        yLabel="EV (s)"
-        height={180}
-      />
+      <LineChart series={series} xLabel="Candidate pit lap" yLabel="EV (s)" height={180} />
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
         {points
           .filter((p) => p.recommend)
           .map((p) => (
-            <span
-              key={p.lap}
-              className="chip"
-              style={{ borderLeft: `3px solid ${color}` }}
-            >
+            <span key={p.lap} className="chip" style={{ borderLeft: `3px solid ${color}` }}>
               L{p.lap} · {p.mean_ev >= 0 ? "+" : ""}
               {p.mean_ev.toFixed(2)}s
             </span>
