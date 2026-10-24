@@ -114,3 +114,20 @@ also require reinstalling the previous release's runtime requirements.
   service/nginx file hashes matched the pre-deployment baseline. Its original
   IP route and health endpoint remained operational.
 - F1 service used approximately 140 MB RAM before the final simulation checks.
+
+## PHP advisory check — 24 October 2026
+
+The running Lightsail host was checked over SSH for CVE-2026-109618 and
+CVE-2026-109619. No installed PHP packages, PHP executable on PATH, PHP/Apache
+processes, or nginx PHP/FastCGI routes were found. A file search under `/opt`,
+`/usr/local`, `/usr/bin`, `/usr/sbin`, `/snap`, and `/var/www` found no PHP runtime
+or application scripts; the PHP-named files found in snaps were AppArmor policy
+abstractions, not runtimes. The `php-crypt-gpg` dpkg entry had status `un`
+(not installed).
+
+F1 runs Python/Uvicorn; Tidewatch runs Node.js. Both systemd services and nginx
+were active, F1 health returned `ok`, Tidewatch returned HTTP 200, and `nginx -t`
+passed. No affected PHP runtime was identified, so no PHP update was needed.
+This check covers the shared host at that time, not other account resources or
+software installed later. The temporary single-IP SSH rule used for this audit
+was removed afterward, preserving the original SSH allowlist.

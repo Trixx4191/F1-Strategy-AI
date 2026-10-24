@@ -71,3 +71,18 @@ export function flagUrl(cc: string, w = 40): string {
 export function flagUrlSvg(cc: string): string {
   return `https://flagcdn.com/${cc.toLowerCase()}.svg`;
 }
+
+/** Read chronological stints rather than a set-like compound summary. */
+export function strategyCompounds(row: { strategy?: string; compound_sequence?: string[] }): string[] {
+  const stints = [...(row.strategy || "").matchAll(/\b(SOFT|MEDIUM|HARD|INTERMEDIATE|INTER|WET)\s*\(/gi)].map((match) => match[1].toUpperCase());
+  return stints.length ? stints : (row.compound_sequence || []).flatMap((compound) => compound.split(/\s*[→,+]\s*/)).filter(Boolean);
+}
+
+export function formatRaceTime(seconds?: number | null): string {
+  if (seconds == null || !Number.isFinite(seconds)) return "—";
+  const tenths = Math.round(seconds * 10);
+  const hours = Math.floor(tenths / 36000);
+  const minutes = Math.floor((tenths % 36000) / 600);
+  const remainder = ((tenths % 600) / 10).toFixed(1).padStart(4, "0");
+  return `${hours ? `${hours}:` : ""}${String(minutes).padStart(2, "0")}:${remainder}`;
+}

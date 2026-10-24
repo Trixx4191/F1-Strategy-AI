@@ -58,7 +58,7 @@ export function LineChart({
       {[0.25, 0.5, 0.75].map((t) => {
         const y = height * t;
         return (
-          <line key={t} x1={28} x2={width - 28} y1={y} y2={y} stroke="#1e1e1e" strokeWidth={1} />
+          <line key={t} x1={28} x2={width - 28} y1={y} y2={y} stroke="#30363d" strokeWidth={1} />
         );
       })}
       {series.map((s) => {
@@ -80,19 +80,19 @@ export function LineChart({
             strokeDasharray="4 3"
             opacity={0.8}
           />
-          <text x={sx(m.x) + 3} y={40} fill={m.color} fontSize={10} fontFamily="Titillium Web">
+          <text x={sx(m.x) + 3} y={40} fill={m.color} fontSize={10} fontFamily="system-ui">
             {m.label || `cliff ${m.x.toFixed(0)}`}
           </text>
         </g>
       ))}
-      <text x={width / 2} y={height - 6} textAnchor="middle" fill="#555" fontSize={10}>
+      <text x={width / 2} y={height - 6} textAnchor="middle" fill="#a5adb7" fontSize={10}>
         {xLabel}
       </text>
       <text
         x={12}
         y={height / 2}
         textAnchor="middle"
-        fill="#555"
+        fill="#a5adb7"
         fontSize={10}
         transform={`rotate(-90 12 ${height / 2})`}
       >
@@ -102,7 +102,7 @@ export function LineChart({
       {series.map((s, i) => (
         <g key={s.name} transform={`translate(${40 + i * 90}, 14)`}>
           <rect width={12} height={3} y={-2} fill={s.color} />
-          <text x={16} y={2} fill="#aaa" fontSize={10} fontFamily="Titillium Web">
+          <text x={16} y={2} fill="#a5adb7" fontSize={10} fontFamily="system-ui">
             {s.name}
           </text>
         </g>
@@ -131,67 +131,29 @@ export function ScatterChart({
       {points.map((p, i) => (
         <circle key={i} cx={sx(p.x)} cy={sy(p.y)} r={3} fill={p.color} opacity={0.75} />
       ))}
-      <text x={width / 2} y={height - 6} textAnchor="middle" fill="#555" fontSize={10}>
+      <text x={width / 2} y={height - 6} textAnchor="middle" fill="#a5adb7" fontSize={10}>
         Tyre age (laps)
       </text>
     </svg>
   );
 }
 
-export function BarChart({
-  items,
-  width = 560,
-  height = 260,
-}: {
+export function BarChart({ items, width = 560, height = 320, unit = "" }: {
   items: { label: string; value: number; color?: string }[];
-  width?: number;
-  height?: number;
+  width?: number; height?: number; unit?: string;
 }) {
-  // `valueKey` used to be a prop here (meant to let callers point the
-  // chart at a differently-named field), but the render logic below
-  // always read `.value` directly regardless of what was passed — no
-  // caller ever used it, so it was dead code silenced with `void
-  // valueKey;` rather than genuinely wired up or removed. Removed
-  // cleanly since nothing in App.tsx passes it.
   if (!items.length) return <div className="muted">No strategies</div>;
-  const pad = 28;
-  const maxV = Math.max(...items.map((i) => i.value));
-  const minV = Math.min(...items.map((i) => i.value));
-  const span = Math.max(maxV - minV, 1e-9);
-  const barW = Math.max(6, (width - 2 * pad) / items.length - 4);
-  return (
-    <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ maxHeight: height }}>
-      {items.map((it, i) => {
-        const h = ((it.value - minV) / span) * (height - 2 * pad) * 0.9 + 4;
-        const x = pad + i * ((width - 2 * pad) / items.length);
-        const y = height - pad - h;
-        return (
-          <g key={i}>
-            <rect
-              x={x}
-              y={y}
-              width={barW}
-              height={h}
-              fill={it.color || "#e8002d"}
-              opacity={0.85}
-            />
-            {i % Math.ceil(items.length / 12) === 0 && (
-              <text
-                x={x + barW / 2}
-                y={height - 8}
-                textAnchor="middle"
-                fill="#555"
-                fontSize={8}
-                transform={`rotate(-40 ${x + barW / 2} ${height - 8})`}
-              >
-                {it.label.slice(0, 14)}
-              </text>
-            )}
-          </g>
-        );
-      })}
-    </svg>
-  );
+  const max = Math.max(...items.map((item) => Math.abs(item.value)), 1);
+  const labelWidth = 150;
+  const rowHeight = (height - 20) / items.length;
+  const usableWidth = width - labelWidth - 75;
+  return <svg viewBox={`0 0 ${width} ${height}`} width="100%" role="img" aria-label={`Strategy comparison in ${unit || "values"}`}>
+    {items.map((item, index) => {
+      const y = index * rowHeight + 10;
+      const barWidth = Math.max(2, Math.abs(item.value) / max * usableWidth);
+      return <g key={index}><title>{item.label}: {item.value.toFixed(2)} {unit}</title><text x={0} y={y + rowHeight / 2 + 3} fill="#a5adb7" fontSize={11} fontFamily="monospace">{item.label.slice(0, 22)}</text><rect x={labelWidth} y={y + rowHeight * .18} width={barWidth} height={rowHeight * .64} rx={2} fill={item.color || "#ee6258"} opacity={.8} /><text x={labelWidth + barWidth + 8} y={y + rowHeight / 2 + 3} fill="#f0f2f4" fontSize={11} fontFamily="monospace">{item.value.toFixed(2)}{unit}</text></g>;
+    })}
+  </svg>;
 }
 
 export function HeatStrip({

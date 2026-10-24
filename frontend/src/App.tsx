@@ -7,16 +7,18 @@ import {
   type TimingRow,
   type RivalAnalysisResult,
   type DriverEntry,
+  type StrategyRow,
 } from "./api";
 import {
   LineChart,
   ScatterChart,
   BarChart,
   EvTimeline,
+  HeatStrip,
   TYRE,
   TRACE_COLORS,
 } from "./Charts";
-import { compoundStyle, raceCountryCode, flagUrl } from "./f1ui";
+import { compoundStyle, raceCountryCode, flagUrl, strategyCompounds, formatRaceTime } from "./f1ui";
 import "./index.css";
 
 function CompoundPill({ c, size = "md" }: { c?: string | null; size?: "sm" | "md" }) {
@@ -25,15 +27,15 @@ function CompoundPill({ c, size = "md" }: { c?: string | null; size?: "sm" | "md
     <span
       className={`compound-pill${size === "sm" ? " sm" : ""}`}
       style={{ background: s.fill, color: s.text, borderColor: s.border }}
-      title={s.label}
+      title={s.label} aria-label={s.label}
     >
       {s.label[0]}
     </span>
   );
 }
 
-function CompoundSequence({ compounds }: { compounds?: string[] }) {
-  const list = compounds || [];
+function CompoundSequence({ compounds, strategy }: { compounds?: string[]; strategy?: string }) {
+  const list = strategyCompounds({ compound_sequence: compounds, strategy });
   if (!list.length) return <span className="muted">—</span>;
   return (
     <span className="compound-seq">
@@ -83,10 +85,6 @@ function displayName(code: string, roster: Record<string, DriverEntry>): string 
 
 function displayTeam(code: string, roster: Record<string, DriverEntry>): string {
   return roster[code]?.team || "";
-}
-
-function displayColor(code: string, roster: Record<string, DriverEntry>, timingColor?: string | null): string {
-  return timingColor || roster[code]?.team_color || "#888888";
 }
 
 type Status = "idle" | "loading" | "ready" | "error";
@@ -177,6 +175,9 @@ function makeSavedRunId(): string {
 }
 
 export default function App() {
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [runConfig, setRunConfig] = useState<PersistedUiState | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [latestYear, setLatestYear] = useState(2025);
   const [year, setYear] = useState(2024);
   const [races, setRaces] = useState<string[]>([]);
@@ -239,6 +240,7 @@ export default function App() {
 
     if (storedCurrent?.result) {
       setSim(storedCurrent.result);
+      setRunConfig(storedCurrent.state);
       setSession({
         year: storedCurrent.result.year,
         race: storedCurrent.result.race,
@@ -295,7 +297,7 @@ export default function App() {
       // on every minor UI interaction.
       const ok = writeToStorage(STORAGE_KEYS.current, {
         savedAt: Date.now(),
-        state: { year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, tab, autoPersist },
+        state: runConfig ?? { year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, tab, autoPersist },
         result: sim,
       });
       if (!ok) {
@@ -308,7 +310,7 @@ export default function App() {
       removeFromStorage(STORAGE_KEYS.current);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasHydrated, autoPersist, sim]);
+  }, [hasHydrated, autoPersist, sim, runConfig]);
 
   useEffect(() => {
     if (!hasHydrated) return;
@@ -353,13 +355,20 @@ export default function App() {
           initialRun.then((result) => {
             if (!active) return;
             setSim(result);
+            setRunConfig(saved?.result?.year === year && saved.result.race === race ? saved.state : {
+              year, race, driver: result.driver, rival: result.rival.rival_code,
+              nSims: result.n_simulations, strategyType: "Both", noise: 0.3,
+              useLiveTemp: true, manualTemp: 35, tab: "overview", autoPersist: true,
+            });
             setDriver(result.driver);
             if (!saved?.result) {
               setRival("NOR"); setNSims(500); setStrategyType("Both");
               setNoise(0.3); setUseLiveTemp(true);
             }
             setStatus("ready");
-          }).catch(() => {});
+          }).catch((error: unknown) => {
+            if (active) { setStatus("error"); setError(error instanceof Error ? error.message : String(error)); }
+          });
         }
         const codes = (data.drivers || []).map((d) => d.code);
         if (codes.length) {
@@ -373,27 +382,13 @@ export default function App() {
     return () => { active = false; };
   }, [year, race]);
 
-  const persistCurrentRun = useCallback((result: SimulateResult) => {
-    if (!autoPersist) return;
-    const payload: PersistedCurrentRun = {
-      savedAt: Date.now(),
-      state: {
-        year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, tab, autoPersist,
-      },
-      result,
-    };
-    writeToStorage(STORAGE_KEYS.current, payload);
-  }, [autoPersist, year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, tab]);
-
   const saveCurrentRunToSavedList = useCallback(() => {
     if (!sim) return;
     const item: SavedRun = {
       id: makeSavedRunId(),
       label: `${sim.race} · ${sim.driver} · ${new Date().toLocaleString([], { dateStyle: "short", timeStyle: "short" })}`,
       createdAt: Date.now(),
-      state: {
-        year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, tab, autoPersist,
-      },
+      state: runConfig ?? { year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, tab, autoPersist },
       result: sim,
     };
     // Each saved run is a full /api/simulate response — measured at
@@ -406,12 +401,18 @@ export default function App() {
     // (and quota-failure detection) happens in the effect below that
     // watches `savedRuns`, so this stays a single write path.
     const MAX_SAVED_RUNS = 5;
-    setSavedRuns((prev) => [item, ...prev].slice(0, MAX_SAVED_RUNS));
-  }, [sim, year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, tab, autoPersist]);
+    const next = [item, ...savedRuns].slice(0, MAX_SAVED_RUNS);
+    if (!writeToStorage(STORAGE_KEYS.saved, next)) {
+      setError("Could not save: browser storage is full. Delete an older saved run and try again.");
+      return;
+    }
+    setSavedRuns(next);
+    setNotice("Run saved in this browser. Find it in Saved runs.");
+  }, [sim, year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, tab, autoPersist, savedRuns, runConfig]);
 
   const resetCurrentRun = useCallback(() => {
     setSim(null);
-    setSession(null);
+    setRunConfig(null);
     setStatus("idle");
     setError(null);
     setRivalResult(null);
@@ -421,7 +422,7 @@ export default function App() {
 
   const runSim = useCallback(async () => {
     if (!year || !race) return;
-    setStatus("loading"); setError(null); setSimRunning(true);
+    setStatus("loading"); setError(null); setNotice(null); setSimRunning(true);
     try {
       const result = await api.simulate({
         year, race, driver, rival,
@@ -430,6 +431,9 @@ export default function App() {
         ...(useLiveTemp ? {} : { track_temp_override: manualTemp }),
       } as any);
       setSim(result);
+      setRunConfig({ year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, tab: "overview", autoPersist });
+      setRivalResult(null);
+      setSettingsOpen(false);
       setSession({
         year: result.year, race: result.race, race_laps: result.race_laps,
         timing: result.timing, circuit: result.circuit, weather: result.weather,
@@ -437,14 +441,13 @@ export default function App() {
       });
       setStatus("ready");
       setTab("overview");
-      persistCurrentRun(result);
     } catch (e: unknown) {
-      setStatus("error");
+      setStatus(sim ? "ready" : "error");
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setSimRunning(false);
     }
-  }, [year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, persistCurrentRun]);
+  }, [year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp, sim, autoPersist]);
 
   const timing: TimingRow[] = useMemo(() => {
     const rmap = rosterMap(sim?.drivers ?? session?.drivers);
@@ -475,21 +478,25 @@ export default function App() {
   const yearOptions = Array.from({ length: Math.max(1, latestYear - 2017) }, (_, i) => latestYear - i);
   const rivalOptions = (driverCodes.length ? driverCodes : Object.keys(DRIVER_FALLBACK)).filter((d) => d !== driver);
 
-  const weatherStr = weather
-    ? [weather.track_temp != null ? `TRK ${weather.track_temp.toFixed(0)}°C` : null,
-       weather.air_temp != null ? `AIR ${weather.air_temp.toFixed(0)}°C` : null,
-       weather.rainfall ? "RAIN" : null].filter(Boolean).join(" · ") || "—"
-    : "—";
+  const settingsChanged = !!sim && !!runConfig && (
+    year !== runConfig.year || race !== runConfig.race || driver !== runConfig.driver ||
+    rival !== runConfig.rival || nSims !== runConfig.nSims || strategyType !== runConfig.strategyType ||
+    noise !== runConfig.noise || useLiveTemp !== runConfig.useLiveTemp ||
+    (!useLiveTemp && manualTemp !== runConfig.manualTemp)
+  );
+  const resultDriver = sim?.driver ?? driver;
+  const resultRace = sim?.race ?? race;
+  const busy = simRunning || rivalBusy;
 
   const tabs: { id: Tab; label: string }[] = [
     { id: "overview", label: "Overview" },
     { id: "strategy", label: "Strategy" },
-    { id: "tyres", label: "Tyre Model" },
-    { id: "undercut", label: "Over/Undercut" },
-    { id: "rival", label: "Rival Analysis" },
+    { id: "tyres", label: "Tyres" },
+    { id: "undercut", label: "Pit windows" },
+    { id: "rival", label: "Rival analysis" },
     { id: "backtest", label: "Backtest" },
     { id: "results", label: "Results" },
-    { id: "saved", label: "Saved Sims" },
+    { id: "saved", label: "Saved runs" },
   ];
 
   function exportCsv() {
@@ -500,7 +507,7 @@ export default function App() {
       lines.push([
         s.rank,
         `"${(s.strategy || s.compound_sequence.join("→")).replace(/"/g, '""')}"`,
-        `"${(s.compound_sequence || []).join("→")}"`,
+        `"${strategyCompounds(s).join("→")}"`,
         `"${(s.pit_laps || []).join(" ")}"`,
         s.pit_count ?? "",
         s.mean_time ?? "",
@@ -515,161 +522,81 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `f1_strategy_${year}_${race}_${driver}.csv`;
+    a.download = `f1_strategy_${sim?.year ?? year}_${resultRace}_${resultDriver}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
 
   return (
     <div className="app">
-      <aside className="sidebar">
+      <a className="skip-link" href="#analysis">Skip to analysis</a>
+      <aside className={`sidebar${settingsOpen ? " is-open" : ""}`} aria-label="Simulation settings">
         <div className="sidebar-brand">
-          <div className="eyebrow">Mission Control</div>
-          <h1>F1 <span>STRATEGY</span></h1>
+          <a className="brand" href="#" onClick={(event) => { event.preventDefault(); setTab("overview"); }}>
+            <span className="brand-mark" aria-hidden="true">F1</span><span>STRATEGY<span className="brand-subtitle">Race strategy analysis</span></span>
+          </a>
+          <button className="settings-toggle btn-export" aria-expanded={settingsOpen} aria-controls="simulation-settings" onClick={() => setSettingsOpen(!settingsOpen)}>
+            {settingsOpen ? "Close settings" : "Settings"}
+          </button>
         </div>
-        <div className="sb-section">Session</div>
-        {import.meta.env.VITE_DEMO_MODE === "true" && (
-          <p className="sb-field" style={{ fontSize: 12, lineHeight: 1.5 }}>
-            Historical demo · Bahrain 2024. A completed run loads automatically.
-            Change drivers or settings and run a fresh simulation to explore.
-            Track replay illustrates modelled pace, not recorded car positions.
-          </p>
-        )}
-        <div className="sb-field">
-          <label>Season</label>
-          <select value={year} disabled={import.meta.env.VITE_DEMO_MODE === "true"} onChange={(e) => setYear(Number(e.target.value))}>
-            {yearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
-          </select>
+        <div className="settings-panel" id="simulation-settings">
+          <fieldset disabled={busy} className="settings-fields">
+            <legend className="sb-section">Race setup</legend>
+            {import.meta.env.VITE_DEMO_MODE === "true" ? (
+              <div className="session-card"><RaceFlag race="Bahrain" /><div><strong>Bahrain Grand Prix</strong><span>2024 · Historical race data</span></div></div>
+            ) : <>
+              <div className="sb-field"><label htmlFor="season">Season</label><select id="season" value={year} onChange={(e) => { setYear(Number(e.target.value)); setRace(""); }}>{yearOptions.map((y) => <option key={y}>{y}</option>)}</select></div>
+              <div className="sb-field"><label htmlFor="race">Grand Prix</label><select id="race" value={race} onChange={(e) => setRace(e.target.value)}>{races.map((r) => <option key={r}>{r}</option>)}</select></div>
+            </>}
+            <div className="sb-field"><label htmlFor="driver">Driver</label><select id="driver" value={driver} onChange={(e) => { const next = e.target.value; setDriver(next); setRivalResult(null); if (rival === next) setRival(driver); }}>
+              {(driverCodes.length ? driverCodes : Object.keys(DRIVER_FALLBACK)).map((d) => <option key={d} value={d}>{d} · {displayName(d, roster)}</option>)}
+            </select></div>
+            <div className="sb-field"><label htmlFor="rival">Compare against</label><select id="rival" value={rival} onChange={(e) => { setRival(e.target.value); setRivalResult(null); }}>{rivalOptions.map((d) => <option key={d} value={d}>{d} · {displayName(d, roster)}</option>)}</select></div>
+            <div className="sb-section">Simulation</div>
+            <div className="sb-field"><label htmlFor="strategy-type">Pit stops</label><select id="strategy-type" value={strategyType} onChange={(e) => setStrategyType(e.target.value)}><option value="1-stop">One stop</option><option value="2-stop">Two stops</option><option value="Both">Compare one & two stops</option></select></div>
+            <div className="sb-field"><label htmlFor="iterations">Iterations per strategy <output>{nSims.toLocaleString()}</output></label><input id="iterations" type="range" min={100} max={2000} step={100} value={nSims} onChange={(e) => setNSims(Number(e.target.value))} /><p className="field-hint">More iterations take longer to calculate.</p></div>
+            <details className="advanced-settings"><summary>Advanced settings</summary>
+              <div className="sb-field"><label htmlFor="noise">Lap variability <output>{noise.toFixed(2)} s</output></label><input id="noise" type="range" min={0} max={1} step={0.05} value={noise} onChange={(e) => setNoise(Number(e.target.value))} /></div>
+              <div className="sb-field"><label className="checkbox-label"><input type="checkbox" checked={useLiveTemp} onChange={(e) => setUseLiveTemp(e.target.checked)} />Use recorded track temperature</label></div>
+              {!useLiveTemp && <div className="sb-field"><label htmlFor="temperature">Track temperature <output>{manualTemp}°C</output></label><input id="temperature" type="range" min={15} max={55} value={manualTemp} onChange={(e) => setManualTemp(Number(e.target.value))} /></div>}
+              <div className="sb-field"><label className="checkbox-label"><input type="checkbox" checked={autoPersist} onChange={(e) => setAutoPersist(e.target.checked)} />Remember current run in this browser</label></div>
+              {sim && <div className="sb-field"><button className="text-button" onClick={resetCurrentRun}>Clear current results</button></div>}
+            </details>
+          </fieldset>
+          <div className="sidebar-actions"><button className="btn-run" disabled={busy || status === "loading" || !race} onClick={runSim}>{simRunning ? "Simulating…" : "Run simulation"}<span aria-hidden="true">↗</span></button>
+          {sim && <button className="btn-export save-run" disabled={busy || settingsChanged} onClick={saveCurrentRunToSavedList}>Save run</button>}</div>
+          <p className="sidebar-note">{import.meta.env.VITE_DEMO_MODE === "true" ? "Bahrain 2024 demo. Starts with a completed 500-iteration run; run again to test your settings." : "Compare tyre strategies using recorded race data and Monte Carlo simulation."}</p>
         </div>
-        <div className="sb-field">
-          <label>Grand Prix</label>
-          <select value={race} onChange={(e) => setRace(e.target.value)}>
-            {races.map((r) => <option key={r} value={r}>{r}</option>)}
-          </select>
-        </div>
-        <div className="sb-section">Driver</div>
-        <div className="sb-field">
-          <label>Select driver</label>
-          <select value={driver} onChange={(e) => setDriver(e.target.value)}>
-            {(driverCodes.length ? driverCodes : Object.keys(DRIVER_FALLBACK)).map((d) => (
-              <option key={d} value={d}>
-                {d} — {displayName(d, roster)}{displayTeam(d, roster) ? ` · ${displayTeam(d, roster)}` : ""}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="sb-section">Rival</div>
-        <div className="sb-field">
-          <label>Rival driver</label>
-          <select value={rival} onChange={(e) => setRival(e.target.value)}>
-            {rivalOptions.map((d) => (
-              <option key={d} value={d}>
-                {d} — {displayName(d, roster)}{displayTeam(d, roster) ? ` · ${displayTeam(d, roster)}` : ""}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="sb-section">Simulation</div>
-        <div className="sb-field">
-          <label>MC iterations ({nSims})</label>
-          <input type="range" min={100} max={2000} step={100} value={nSims}
-            onChange={(e) => setNSims(Number(e.target.value))} />
-        </div>
-        <div className="sb-field">
-          <label>Strategy type</label>
-          <select value={strategyType} onChange={(e) => setStrategyType(e.target.value)}>
-            <option value="1-stop">1-stop</option>
-            <option value="2-stop">2-stop</option>
-            <option value="Both">Both</option>
-          </select>
-        </div>
-        <div className="sb-field">
-          <label>Lap noise ({noise.toFixed(2)}s)</label>
-          <input type="range" min={0} max={1} step={0.05} value={noise}
-            onChange={(e) => setNoise(Number(e.target.value))} />
-        </div>
-        <div className="sb-section">Track temp</div>
-        <div className="sb-field">
-          <label>
-            <input type="checkbox" checked={useLiveTemp}
-              onChange={(e) => setUseLiveTemp(e.target.checked)} /> Use live session temp
-          </label>
-        </div>
-        {!useLiveTemp && (
-          <div className="sb-field">
-            <label>Override ({manualTemp}°C)</label>
-            <input type="range" min={15} max={55} step={1} value={manualTemp}
-              onChange={(e) => setManualTemp(Number(e.target.value))} />
-          </div>
-        )}
-        <button className="btn-run" disabled={simRunning || !race} onClick={runSim}>
-          {simRunning ? "RUNNING…" : "▶  RUN SIMULATION"}
-        </button>
-        <div className="sb-field" style={{ marginTop: 12 }}>
-          <label>
-            <input type="checkbox" checked={autoPersist} onChange={(e) => setAutoPersist(e.target.checked)} />
-            Auto-save current run in browser
-          </label>
-        </div>
-        {sim && (
-          <>
-            <button className="btn-run" style={{ marginTop: 12, background: "#1f2937" }} onClick={saveCurrentRunToSavedList}>
-              Save to My Sims
-            </button>
-            <button className="btn-run" style={{ marginTop: 8, background: "#4b5563" }} onClick={resetCurrentRun}>
-              Reset current run
-            </button>
-          </>
-        )}
       </aside>
 
       <div className="main">
         <header className="topbar">
-          <div className="topbar-logo"><span className="dot" /> F1 STRATEGY AI</div>
-          <div className="topbar-meta">
-            <span><strong>{year}</strong> SEASON</span>
-            <span className="flag-chip">
-              <RaceFlag race={race} size={20} />
-              <strong>{(race || "—").toUpperCase()}</strong> GP
-            </span>
-            <span>DRIVER <strong>{driver}</strong></span>
-            <span>TRACK <strong>{weather?.track_temp != null ? `${weather.track_temp.toFixed(0)}°C` : "—"}</strong></span>
-            <span>{weatherStr}</span>
-          </div>
-          <span className={`badge ${status}`}>{status.toUpperCase()}</span>
+          <div className="race-heading"><span className="eyebrow">{import.meta.env.VITE_DEMO_MODE === "true" ? "Historical race · 2024" : `Race analysis · ${year}`}</span><h1>{race || "Choose a race"}<span> Grand Prix</span></h1></div>
+          <div className="race-conditions"><span><strong>{raceLaps || "—"}</strong> laps</span><span><strong>{weather?.track_temp != null ? `${weather.track_temp.toFixed(0)}°C` : "—"}</strong> track</span><span className="historical-tag">{weather?.rainfall ? "Wet conditions" : "Historical data"}</span></div>
         </header>
+        <div className="analysis-heading"><div><span className="eyebrow">Strategy workspace</span><h2>{tabs.find((t) => t.id === tab)?.label}</h2></div><span className="run-status" role="status">{simRunning ? "Calculating simulation…" : rivalBusy ? "Calculating rival analysis…" : status === "loading" ? "Loading race data…" : sim ? `${resultDriver} · ${sim.n_simulations.toLocaleString()} iterations · ${strategies.length.toLocaleString()} strategies` : "Ready to simulate"}</span></div>
+        {error && <div className="error-box" role="alert">{error}<button className="text-button" onClick={() => setError(null)} aria-label="Dismiss error">Dismiss</button></div>}
+        {notice && <div className="notice" role="status">{notice}<button className="text-button" onClick={() => setNotice(null)} aria-label="Dismiss notification">Dismiss</button></div>}
+        {settingsChanged && <div className="settings-notice" role="status"><strong>Settings changed.</strong> Results below are from {resultDriver} vs {sim?.rival.rival_code}. Run a simulation to apply the new settings.</div>}
+        <nav className="tab-bar" aria-label="Analysis sections">
+          {tabs.map((t) => <button key={t.id} className={`tab-btn${tab === t.id ? " active" : ""}`} aria-current={tab === t.id ? "page" : undefined} onClick={() => setTab(t.id)}>{t.label}</button>)}
+        </nav>
 
-        {error && <div className="error-box">{error}</div>}
-
-        <div className="tab-bar">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              className={`tab-btn${tab === t.id ? " active" : ""}`}
-              onClick={() => setTab(t.id)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="tab-content">
+        <main className="tab-content" id="analysis" tabIndex={-1}>
           {[
             { id: "overview", panel: (
               <Overview
-                timing={timing} driver={driver} circuit={circuit} race={race}
-                strategies={strategies} tyreSummary={tyreSummary}
-                rivalData={rivalData} raceLaps={raceLaps} status={status} nSims={nSims}
+                timing={timing} driver={resultDriver} circuit={circuit} race={resultRace}
+                strategies={strategies} raceLaps={raceLaps} status={status}
                 weather={weather} pitLoss={sim?.pit_loss} optimal={sim?.optimal_strategy}
-                backtest={sim?.backtest} lapTraces={sim?.lap_traces ?? []}
-                stopComparison={sim?.stop_comparison} roster={roster}
+                stopComparison={sim?.stop_comparison} roster={roster} onNavigate={setTab}
               />
             ) },
             { id: "strategy", panel: (
               <StrategyTab
                 strategies={strategies}
                 lapTraces={sim?.lap_traces ?? []}
-                ready={status === "ready"}
+                ready={!!sim && !simRunning}
                 stopComparison={sim?.stop_comparison}
                 optimal={sim?.optimal_strategy}
               />
@@ -684,26 +611,14 @@ export default function App() {
               />
             ) },
             { id: "undercut", panel: (
-              <UndercutTab
-                strategies={strategies}
-                raceLaps={raceLaps}
-                year={year}
-                race={race}
-                driver={driver}
-                rival={rival}
-                nSims={nSims}
-                strategyType={strategyType}
-                noise={noise}
-                useLiveTemp={useLiveTemp}
-                manualTemp={manualTemp}
-              />
+              <UndercutTab strategies={strategies} rivalData={rivalData} />
             ) },
             { id: "rival", panel: (
               <RivalTab
-                rival={rivalData}
+                rival={rivalData?.rival_code === rival && sim?.driver === driver ? rivalData : undefined}
                 fallbackRival={rival}
                 rivalResult={rivalResult}
-                rivalBusy={rivalBusy}
+                rivalBusy={busy}
                 year={year} race={race} driver={driver} raceLaps={raceLaps}
                 circuit={circuit}
                 rivalCompound={rivalCompound} setRivalCompound={setRivalCompound}
@@ -732,33 +647,12 @@ export default function App() {
                 }}
               />
             ) },
-            { id: "backtest", panel: <BacktestTab backtest={sim?.backtest ?? null} driver={driver} circuit={circuit} race={race} /> },
+            { id: "backtest", panel: <BacktestTab backtest={sim?.backtest ?? null} driver={resultDriver} circuit={circuit} race={resultRace} /> },
             { id: "results", panel: (
               <ResultsTab
                 strategies={strategies}
                 onExport={exportCsv}
-                onExportBackend={async () => {
-                  try {
-                    const res = await api.simulateCsv({
-                      year, race, driver, rival,
-                      n_simulations: nSims, strategy_type: strategyType,
-                      noise_std: noise, use_live_temp: useLiveTemp,
-                      precomputed_strategies: strategies,
-                      ...(useLiveTemp ? {} : { track_temp_override: manualTemp }),
-                    } as any);
-                    if (!res.ok) throw new Error(res.statusText || "CSV request failed");
-                    const blob = await res.blob();
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement("a");
-                    a.href = url;
-                    a.download = `f1_strategy_${year}_${race}_${driver}.csv`;
-                    a.click();
-                    URL.revokeObjectURL(url);
-                  } catch (e) {
-                    setError(e instanceof Error ? e.message : String(e));
-                  }
-                }}
-                ready={status === "ready"}
+                ready={!!sim && !simRunning}
               />
             ) },
             { id: "saved", panel: (
@@ -770,6 +664,8 @@ export default function App() {
                 }}
                 onLoad={(run) => {
                   setSim(run.result);
+                  setRunConfig(run.state);
+                  setRivalResult(null);
                   setStatus("ready");
                   setSession({
                     year: run.result.year,
@@ -803,15 +699,15 @@ export default function App() {
                 }}
               />
             ) }
-          ].map((pane) => (
+          ].filter((pane) => pane.id === tab).map((pane) => (
             <div key={pane.id} style={{ display: tab === pane.id ? "block" : "none" }}>
               {pane.panel}
             </div>
           ))}
-        </div>
+        </main>
 
         <div className="footer-note">
-          React Mission Control · Full parity with dashboard.py · Circuit from FastF1
+          Race data: FastF1 · Results are model estimates · Replay illustrates simulated pace
         </div>
       </div>
     </div>
@@ -854,11 +750,11 @@ function SavedRunsTab({
         </div>
         <div className="panel-body">
           {savedRuns.length === 0 ? (
-            <div className="muted">No saved sims yet. Run a simulation and save it to compare later.</div>
+            <div className="muted">No saved runs yet. Save a completed run to compare settings here.</div>
           ) : (
             <div style={{ display: "grid", gap: 10 }}>
               {savedRuns.map((run) => (
-                <div key={run.id} className="strat-row" style={{ gridTemplateColumns: "48px 1.5fr 140px 120px 120px" }}>
+                <div key={run.id} className="saved-run-row">
                   <input
                     type="checkbox"
                     checked={selectedIds.includes(run.id)}
@@ -895,7 +791,7 @@ function SavedRunsTab({
               >
                 Compare selected ({selectedRuns.length})
               </button>
-              <button className="btn-run" style={{ background: "#4b5563" }} onClick={onClearAll}>Clear all saved sims</button>
+              <button className="btn-run" style={{ background: "#4b5563" }} onClick={onClearAll}>Clear saved runs</button>
             </div>
           )}
           {selectedRuns.length >= 2 && (
@@ -990,147 +886,44 @@ function SavedRunsTab({
   );
 }
 
-function Overview(props: any) {
-  const { timing, driver, circuit, race, strategies, tyreSummary, rivalData, raceLaps, status, nSims, weather, pitLoss, optimal, backtest, lapTraces, roster = {} } = props;
+function Overview({ timing, driver, circuit, race, strategies, raceLaps, status, weather, pitLoss, optimal, stopComparison, roster = {}, onNavigate }: any) {
+  const sequence = optimal ? strategyCompounds(optimal) : [];
+  const pitLaps: number[] = optimal?.pit_laps || [];
+  const boundaries = [0, ...pitLaps, raceLaps];
   return (
-    <div className="grid">
-      {(optimal || weather || pitLoss != null) && (
-        <div className="panel span-full">
-          <div className="panel-header"><span className="title">Session Metrics</span></div>
-          <div className="panel-body">
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
-              <div className="ev-block">
-                <div className="lbl">Optimal</div>
-                <div className="val" style={{ color: "#e8002d", fontSize: "0.85rem" }}>
-                  {optimal ? <CompoundSequence compounds={optimal.compound_sequence} /> : "—"}
-                </div>
-                <div className="sub">{optimal?.mean_time != null ? `${optimal.mean_time.toFixed(1)}s` : "run sim"}</div>
-              </div>
-              <div className="ev-block">
-                <div className="lbl">Pit loss</div>
-                <div className="val" style={{ color: "#fff" }}>{pitLoss != null ? `${Number(pitLoss).toFixed(1)}s` : "—"}</div>
-              </div>
-              <div className="ev-block">
-                <div className="lbl">Track temp</div>
-                <div className="val" style={{ color: "#fff" }}>{weather?.track_temp != null ? `${weather.track_temp.toFixed(0)}°C` : "—"}</div>
-                <div className="sub">{weather?.rainfall ? "RAIN" : "Dry"}</div>
-              </div>
-              <div className="ev-block">
-                <div className="lbl">Cliff (SOFT)</div>
-                <div className="val" style={{ color: "#e8002d" }}>
-                  {(() => { const s = (tyreSummary || []).find((x: any) => x.compound === "SOFT"); return s?.cliff_lap != null ? `L${s.cliff_lap.toFixed(0)}` : "—"; })()}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="panel">
-        <div className="panel-header"><span className="title">Timing Tower</span><span>{timing.length} CARS</span></div>
-        <div className="panel-body no-pad">
-          {timing.length === 0 ? (
-            <div className="muted" style={{ padding: "1rem" }}>{status === "loading" ? "Loading…" : "No classification"}</div>
-          ) : (
-            <>
-              <div className="tt-row" style={{ background: "var(--off)", fontSize: "0.55rem", color: "var(--dim)" }}>
-                <div>POS</div><div>NO</div><div>DRIVER</div>
-                <div style={{ textAlign: "right" }}>GAP</div>
-                <div style={{ textAlign: "right" }}>INT</div>
-                <div style={{ textAlign: "center" }}>TYRE</div>
-              </div>
-              {timing.map((r: TimingRow) => (
-                <div key={r.driver + String(r.pos)} className={`tt-row${r.driver === driver ? " selected" : ""}`}>
-                  <div className="tt-pos">{r.pos ?? "—"}</div>
-                  <div className="tt-code" style={{ color: r.team_color || "#888" }}>{r.driver}</div>
-                  <div style={{ fontSize: "0.68rem", color: "var(--dim)" }}>{r.name}</div>
-                  <div className="tt-gap">{r.pos === 1 || r.gap === 0 ? "LEADER" : r.gap == null ? "—" : `+${r.gap.toFixed(3)}`}</div>
-                  <div className="tt-int">—</div>
-                  <div className="tt-age">
-                    <CompoundPill c={r.compound} size="sm" />
-                    <span>{r.tyre_age ?? "—"}</span>
-                  </div>
-                </div>
-              ))}
-            </>
-          )}
-        </div>
-      </div>
-      <div className="panel">
-        <div className="panel-header"><span className="title">Track Map</span><span>{backtest ? "SIM REPLAY" : "LIVE"}</span></div>
-        <div className="panel-body no-pad">
-          <TrackMap circuit={circuit} race={race} nodes={timing.slice(0, 12).map((r: TimingRow) => ({
-            code: r.driver, compound: r.compound || undefined, color: r.team_color, selected: r.driver === driver,
-          }))} replayLaps={backtest?.optimal?.lap_times ?? lapTraces?.[0]?.lap_times ?? []} />
-        </div>
-      </div>
-      <div className="panel">
-        <div className="panel-header"><span className="title">Driver / Rival</span></div>
+    <div className="overview-layout">
+      <section className="panel recommendation">
+        <div className="panel-header"><span className="title">Recommended strategy</span><span>{driver} · {displayTeam(driver, roster)}</span></div>
         <div className="panel-body">
-          <div className="drv-node selected">
-            <div className="drv-node-top">
-              <span className="drv-node-code" style={{ color: displayColor(driver, roster) }}>{driver}</span>
-              <span className="drv-node-team">{displayTeam(driver, roster)}</span>
-            </div>
-          </div>
-          <div style={{ marginTop: 12 }}>
-            <div className="muted" style={{ marginBottom: 6 }}>vs {rivalData?.rival_code || "—"}</div>
-            <div className="ev-row">
-              <div className="ev-block" style={{ borderLeft: "2px solid var(--red)" }}>
-                <div className="lbl">UNDERCUT</div>
-                <div className="val" style={{ color: "var(--red)" }}>
-                  {rivalData?.undercut_best_ev != null ? `${rivalData.undercut_best_ev >= 0 ? "+" : ""}${rivalData.undercut_best_ev.toFixed(2)}s` : "—"}
-                </div>
-              </div>
-              <div className="ev-block" style={{ borderLeft: "2px solid var(--teal)" }}>
-                <div className="lbl">OVERCUT</div>
-                <div className="val" style={{ color: "var(--teal)" }}>
-                  {rivalData?.overcut_best_ev != null ? `${rivalData.overcut_best_ev >= 0 ? "+" : ""}${rivalData.overcut_best_ev.toFixed(2)}s` : "—"}
-                </div>
-              </div>
-            </div>
-          </div>
-          <div className="chip-row" style={{ marginTop: 12 }}>
-            {tyreSummary.map((t: any) => (
-              <div key={t.compound} className="chip" style={{ borderLeft: `3px solid ${compoundStyle(t.compound).fill}` }}>
-                <CompoundPill c={t.compound} size="sm" />
-                <span>CLIFF {t.cliff_lap != null ? t.cliff_lap.toFixed(1) : "—"}</span>
-              </div>
-            ))}
-          </div>
-          <div className="muted" style={{ marginTop: 10 }}>
-            L{status === "ready" ? raceLaps : 0}/{raceLaps || "—"} · MC {status === "ready" ? nSims : 0}
-          </div>
+          {optimal ? <>
+            <div className="recommendation-top"><div><span className="eyebrow">Lowest expected race time</span><h3>{pitLaps.length === 1 ? "One" : pitLaps.length === 2 ? "Two" : pitLaps.length} stop{pitLaps.length !== 1 ? "s" : ""}<span className="strategy-sequence"><CompoundSequence compounds={sequence} /></span></h3></div><div className="race-time"><strong>{formatRaceTime(optimal.mean_time)}</strong><span>Expected race time</span></div></div>
+            <div className="stint-plan" aria-label="Recommended tyre stints">{sequence.map((compound, i) => <div className="stint" key={i} style={{ flex: Math.max(1, (boundaries[i + 1] || raceLaps) - boundaries[i]), borderTopColor: compoundStyle(compound).fill }}><strong>{compoundStyle(compound).label}</strong><span>L{boundaries[i] + 1}–{boundaries[i + 1] || raceLaps}</span></div>)}</div>
+            <div className="recommendation-facts"><div><span>Pit on lap{pitLaps.length !== 1 ? "s" : ""}</span><strong>{pitLaps.join(" & ") || "No stop"}</strong></div><div><span>Race time variability</span><strong>{optimal.std_time != null ? `±${optimal.std_time.toFixed(2)} s` : "—"}</strong></div><div><span>Estimated pit loss</span><strong>{pitLoss != null ? `${pitLoss.toFixed(1)} s` : "—"}</strong></div></div>
+            <p className="field-hint">Fastest expected strategy among those tested. Variability is one standard deviation across simulations.</p>
+            <button className="text-button" onClick={() => onNavigate("strategy")}>Compare strategy performance <span aria-hidden="true">→</span></button>
+          </> : <div className="empty-state"><h3>{status === "loading" ? "Loading race data…" : "Set up your first simulation"}</h3><p>Choose a driver and pit-stop options, then run a simulation to compare strategies.</p></div>}
         </div>
-      </div>
-      <div className="panel span-full">
-        <div className="panel-header"><span className="title">Top Strategies</span></div>
-        <div className="panel-body">
-          {strategies.length === 0 ? <div className="muted">Run simulation to populate</div> : (
-            strategies.slice(0, 5).map((s: any) => (
-              <div key={s.rank} className="strat-row">
-                <div style={{ color: "var(--dim)" }}>#{s.rank}</div>
-                <div>
-                  <div><CompoundSequence compounds={s.compound_sequence} /></div>
-                  <div style={{ color: "var(--dim)", fontSize: "0.58rem" }}>PIT {(s.pit_laps || []).join(",") || "—"}</div>
-                </div>
-                <div style={{ textAlign: "right" }}>{s.mean_time != null ? `${s.mean_time.toFixed(1)}s` : "—"}</div>
-                <div style={{ textAlign: "right", color: "var(--dim)" }}>
-                  {s.win_rate != null ? `${(s.win_rate * 100).toFixed(0)}%` : ""}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
+      </section>
+      <section className="panel circuit-panel"><div className="panel-header"><span className="title">{race} circuit</span><span>{raceLaps} laps</span></div><div className="panel-body circuit-body"><TrackOutline circuit={circuit} /><div className="circuit-facts"><span>{weather?.track_temp != null ? `${weather.track_temp.toFixed(0)}°C track` : "Temperature unavailable"}</span><span>{weather?.rainfall ? "Wet" : "Dry"} session</span></div><p className="field-hint">Recorded circuit geometry · FastF1</p></div></section>
+      <section className="panel span-full"><div className="panel-header"><span className="title">Leading strategies</span><button className="text-button" onClick={() => onNavigate("results")}>All {strategies.length.toLocaleString()} results →</button></div><div className="panel-body no-pad table-scroll"><table className="data-table strategy-table"><caption className="sr-only">Top five strategies ranked by expected race time</caption><thead><tr><th>Rank</th><th>Tyre sequence</th><th>Pit laps</th><th>Race time</th><th>Gap to best</th></tr></thead><tbody>{strategies.slice(0, 5).map((row: StrategyRow) => <tr key={row.rank}><td className="rank-cell">{String(row.rank).padStart(2, "0")}</td><td><CompoundSequence compounds={row.compound_sequence} strategy={row.strategy} /></td><td>{row.pit_laps.join(" / ") || "—"}</td><td>{formatRaceTime(row.mean_time)}</td><td className={row.rank === 1 ? "best-value" : "muted"}>{row.rank === 1 ? "Best" : row.mean_time != null && optimal?.mean_time != null ? `+${(row.mean_time - optimal.mean_time).toFixed(2)} s` : "—"}</td></tr>)}</tbody></table>{!strategies.length && <p className="empty-state">Simulation results will appear here.</p>}</div></section>
+      {stopComparison?.faster && <p className="comparison-note"><strong>{stopComparison.faster === "1-stop" ? "One stop" : "Two stops"}</strong> is faster by {stopComparison.delta_seconds?.toFixed(2)} s in this model. <button className="text-button" onClick={() => onNavigate("strategy")}>View comparison →</button></p>}
+      <details className="panel classification span-full"><summary>Recorded race classification <span>{timing.length} drivers</span></summary><div className="table-scroll"><table className="data-table"><caption className="sr-only">Historical race classification, separate from simulation results</caption><thead><tr><th>Pos</th><th>Driver</th><th>Team</th><th>Gap (s)</th><th>Tyre / age</th></tr></thead><tbody>{timing.map((row: TimingRow) => <tr key={row.driver} className={row.driver === driver ? "selected-row" : ""}><td>{row.pos ?? "—"}</td><td><span style={{ color: row.team_color }}>{row.driver}</span> · {row.name}</td><td>{row.team}</td><td>{row.pos === 1 ? "Leader" : row.gap != null ? `+${row.gap.toFixed(3)}` : "—"}</td><td><CompoundPill c={row.compound} size="sm" /> {row.tyre_age ?? "—"}</td></tr>)}</tbody></table></div></details>
     </div>
   );
 }
 
+function TrackOutline({ circuit }: { circuit?: SessionData["circuit"] }) {
+  const points = circuit?.points ?? [];
+  if (points.length < 2) return <p className="muted">Circuit outline unavailable.</p>;
+  const path = points.map((point, i) => `${i ? "L" : "M"}${point.x * 100},${point.y * 100}`).join(" ") + " Z";
+  return <svg className="circuit-outline" viewBox="-8 -8 116 116" role="img" aria-label={`${circuit?.name || "Race"} circuit outline`}><path d={path} fill="none" stroke="var(--border)" strokeWidth="5" strokeLinejoin="round" /><path d={path} fill="none" stroke="#c6cbd2" strokeWidth="1.2" strokeLinejoin="round" /><circle cx={points[0].x * 100} cy={points[0].y * 100} r="2" fill="var(--red)" /></svg>;
+}
+
 function StrategyTab({ strategies, lapTraces, ready, stopComparison, optimal }: any) {
-  const bars = strategies.slice(0, 20).map((s: any) => ({
-    label: (s.compound_sequence || []).join("→") || s.strategy || `#${s.rank}`,
-    value: s.mean_time ?? 0,
+  const bestTime = strategies[0]?.mean_time ?? 0;
+  const bars = strategies.slice(0, 10).map((s: any) => ({
+    label: strategyCompounds(s).join("→") || s.strategy || `#${s.rank}`,
+    value: (s.mean_time ?? bestTime) - bestTime,
     color: s.pit_count === 1 ? "#e8002d" : "#ffd700",
   }));
   const traces = (lapTraces || []).map((t: any, i: number) => ({
@@ -1169,9 +962,9 @@ function StrategyTab({ strategies, lapTraces, ready, stopComparison, optimal }: 
         </div>
       )}
       <div className="panel">
-        <div className="panel-header"><span className="title">Strategy Comparison</span> — Mean Race Time</div>
+        <div className="panel-header"><span className="title">Strategy comparison</span> — Seconds behind best</div>
         <div className="panel-body">
-          {!ready ? <div className="muted">Run simulation first</div> : <BarChart items={bars} height={280} />}
+          {!ready ? <div className="muted">Run simulation first</div> : <BarChart items={bars} height={320} unit="s" />}
         </div>
       </div>
       <div className="panel">
@@ -1304,135 +1097,9 @@ function TyresTab({ curves, scatter, phaseSlopes, summary, tyreSummary }: any) {
   );
 }
 
-function UndercutTab({ strategies, raceLaps, year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp }: any) {
-  // `strategies`/`raceLaps` are used below to pass precomputed data to the
-  // undercut-plot request (avoiding a full backend recompute — see
-  // docs/decisions.md). `cells` (the raw heatmap grid) was previously
-  // destructured here too but never used — this tab renders the
-  // server-generated PNG heatmap instead of a client-side one, so that
-  // prop was genuinely dead code. Removed here and at the call site
-  // rather than silencing the warning with `void cells;`.
-  const [imgUrlLeft, setImgUrlLeft] = useState<string | null>(null);
-  const [imgUrlRight, setImgUrlRight] = useState<string | null>(null);
-  const [imgUrlCompare, setImgUrlCompare] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    let mounted = true;
-    async function load() {
-      setLoading(true);
-      try {
-        const body: any = {
-          year: year || 2024,
-          race: race || "",
-          driver: driver || "VER",
-          rival: rival || "NOR",
-          n_simulations: nSims || 200,
-          strategy_type: strategyType || "Both",
-          noise_std: noise || 0.3,
-          use_live_temp: useLiveTemp ?? true,
-          track_temp_override: useLiveTemp ? undefined : manualTemp,
-          // race_laps was previously missing entirely, so even when the
-          // fast path below was taken the backend received race_laps=0
-          // and generated the heatmap with a meaningless lap range.
-          race_laps: raceLaps || 0,
-        };
-        // Use the strategies this component already received as a prop —
-        // this is the same data /api/simulate returned for the CURRENT
-        // year/race/driver/rival selection. The previous implementation
-        // read from (window as any).__SIMULATION_PAYLOAD / .sim instead:
-        // functionally similar in the common case, but it opens a real
-        // staleness window — if this effect re-fires (e.g. the user
-        // changed race) before a fresh /api/simulate call finishes, the
-        // global could still hold the PREVIOUS race's strategies, and
-        // nothing here would catch the mismatch — the backend has no way
-        // to know mc_results doesn't correspond to the year/race also in
-        // this same request body, so it would silently render the wrong
-        // race's heatmap. Using the prop ties this directly to the same
-        // render pass, and it's also just proper React data flow instead
-        // of global mutable state smuggled through `window`.
-        if (strategies && strategies.length) {
-          body.mc_results = strategies;
-        }
-        // As a stronger default, try reading the global `sim` injected by the app
-        // (we'll set it below when simulation completes)
-        // Fetch undercut image (from MC results)
-        const uReq = api.undercutPlot(body);
-        // Also request rival scan to build compare plot — prefer cached sim rival data
-        let rScan: RivalAnalysisResult | null = null;
-        try {
-          rScan = await api.rivalAnalysis({ year, race, driver, rival: rival || "NOR", rival_compound: "MEDIUM", rival_tyre_age: 10, gap_to_rival: 2.0, scan_from_lap: Math.max(8, Math.floor((raceLaps||57)/4)), scan_to_lap: Math.min((raceLaps||57)-8, Math.floor((raceLaps||57)/2)+5), our_compound: "MEDIUM", our_tyre_age: 10, new_compound: "SOFT", n_simulations: Math.min(150, Math.max(50, Math.floor(nSims/3))), noise_std: noise, run_h2h: false });
-        } catch (e) {
-          rScan = null;
-        }
-
-        // Fetch undercut image
-        try {
-          const res = await uReq;
-          if (res && res.ok) {
-            const blob = await res.blob();
-            const url = URL.createObjectURL(blob);
-            if (mounted) setImgUrlLeft(url);
-          }
-        } catch (e) {
-          console.error(e);
-        }
-
-        // Fetch overcut image (prefer precomputed rival scan if available)
-        try {
-          const oBody: any = { year, race, driver, rival: rival || "NOR", n_simulations: Math.min(150, Math.max(50, Math.floor(nSims/3))), noise_std: noise };
-          if (rScan && rScan.overcut_timeline) oBody.overcut_timeline = rScan.overcut_timeline;
-          const oRes = await api.overcutPlot(oBody);
-          if (oRes && oRes.ok) {
-            const b = await oRes.blob();
-            const url = URL.createObjectURL(b);
-            if (mounted) setImgUrlRight(url);
-          }
-        } catch (e) {
-          console.error(e);
-        }
-
-        // If we have scan data, request compare plot (undercut vs overcut) and show below
-        if (rScan && rScan.undercut_timeline && rScan.overcut_timeline) {
-          try {
-            const cmpRes = await api.rivalComparePlot({ undercut_scan: rScan.undercut_timeline, overcut_scan: rScan.overcut_timeline, rival: rival || "NOR", driver });
-            if (cmpRes.ok) {
-              const b2 = await cmpRes.blob();
-              const url2 = URL.createObjectURL(b2);
-              if (mounted) setImgUrlCompare(url2);
-            }
-          } catch (e) {
-            console.error(e);
-          }
-        }
-      } catch (e) {
-        console.error(e);
-      } finally { setLoading(false); }
-    }
-    load();
-    return () => { mounted = false; if (imgUrlLeft) URL.revokeObjectURL(imgUrlLeft); if (imgUrlRight) URL.revokeObjectURL(imgUrlRight); if (imgUrlCompare) URL.revokeObjectURL(imgUrlCompare); };
-    // Deliberately re-fetch whenever any input that affects the plots
-    // changes — the previous empty dependency array meant switching race,
-    // driver, or rival after this tab first loaded left stale PNGs on
-    // screen from whatever combination was active on mount.
-  }, [year, race, driver, rival, nSims, strategyType, noise, useLiveTemp, manualTemp]);
-
-  return (
-    <div className="detail-grid">
-      <div className="panel span-full">
-        <div className="panel-header"><span className="title">Undercut Window</span> — Exact Plot</div>
-        <div className="panel-body">
-          {loading ? <div className="muted">Generating plots…</div> : (
-            <div style={{ display: "grid", gap: 14 }}>
-              <div style={{ width: "100%" }}>{imgUrlLeft ? <img src={imgUrlLeft} alt="Undercut window" style={{ width: "100%" }} /> : <div className="muted">No undercut image</div>}</div>
-              <div style={{ width: "100%" }}>{imgUrlRight ? <img src={imgUrlRight} alt="Overcut window" style={{ width: "100%" }} /> : <div className="muted">No overcut image</div>}</div>
-              <div style={{ width: "100%" }}>{imgUrlCompare ? <img src={imgUrlCompare} alt="Undercut vs Overcut" style={{ width: "100%" }} /> : <div className="muted">No compare image</div>}</div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
+function UndercutTab({ strategies, rivalData }: { strategies: StrategyRow[]; rivalData?: SimulateResult["rival"] }) {
+  const cells = strategies.filter((row) => row.pit_laps.length === 1).map((row) => ({ pit_lap: row.pit_laps[0], mean_time: row.mean_time, pair: strategyCompounds(row).join(" → "), win_rate: row.win_rate ?? null }));
+  return <div className="detail-grid"><section className="panel span-full"><div className="panel-header"><span className="title">One-stop pit timing</span><span>From current simulation</span></div><div className="panel-body"><p className="section-description">Best expected one-stop race time at each tested pit lap. Green is faster; red is slower.</p><HeatStrip cells={cells} /></div></section><section className="panel"><div className="panel-header"><span className="title">Undercut · {rivalData?.rival_code || "Rival"}</span></div><div className="panel-body"><EvTimeline points={rivalData?.undercut_timeline || []} color="#ef6259" label="Undercut" /></div></section><section className="panel"><div className="panel-header"><span className="title">Overcut · {rivalData?.rival_code || "Rival"}</span></div><div className="panel-body"><EvTimeline points={rivalData?.overcut_timeline || []} color="#75bda7" label="Overcut" /></div></section><p className="section-description span-full">Positive expected gain favours the move. Use Rival analysis to test a different gap, tyre age, or compound.</p></div>;
 }
 
 function RivalTab(props: any) {
@@ -1497,7 +1164,7 @@ function RivalTab(props: any) {
             </div>
             <div style={{ display: "flex", alignItems: "flex-end" }}>
               <button className="btn-run" style={{ width: "100%", margin: 0 }} disabled={rivalBusy || !race} onClick={onRunRival}>
-                {rivalBusy ? "SCANNING…" : "▶  RUN RIVAL ANALYSIS"}
+                {rivalBusy ? "Scanning…" : "Run rival analysis"}
               </button>
             </div>
           </div>
@@ -1507,7 +1174,7 @@ function RivalTab(props: any) {
 
       {rec && (
         <div className="panel span-full">
-          <div className="panel-header"><span className="title">AI Recommendation</span></div>
+          <div className="panel-header"><span className="title">Model comparison</span></div>
           <div className="panel-body">
             <strong style={{ color: rec.winner === "UNDERCUT" ? "#e8002d" : "#00d2be" }}>{rec.winner}</strong>
             {" "}is the stronger play · Best EV <strong>+{rec.best_ev.toFixed(2)}s</strong>
@@ -1605,7 +1272,7 @@ function RivalTab(props: any) {
                 value: (h.win_rate ?? 0) * 100,
                 color: (h.win_rate ?? 0) >= 0.5 ? "#39b54a" : "#e8002d",
               }))}
-              height={220}
+              height={300} unit="%"
             />
             {r.h2h[0] && (
               <div style={{ marginTop: 10 }} className="muted">
@@ -1624,56 +1291,12 @@ function RivalTab(props: any) {
 }
 
 function BacktestTab({ backtest, driver, circuit, race }: any) {
-  // useState/useEffect must run unconditionally on every render — they
-  // were previously declared AFTER the `if (!backtest) return ...` early
-  // exit below, which is a React Rules of Hooks violation: this component
-  // calls zero hooks on the first render (before a simulation has run,
-  // when backtest is null) and then calls two hooks once backtest becomes
-  // populated. React detects this hook-count mismatch between renders and
-  // throws ("Rendered fewer hooks than expected") the first time a user
-  // actually runs a simulation and opens this tab. Fixed by declaring the
-  // hooks first and guarding their *internal* logic on backtest instead.
-  const [imgUrl, setImgUrl] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!backtest) return;
-    let mounted = true;
-    async function load() {
-      setLoading(true);
-      try {
-        if (backtest.plot_url) {
-          const urlFetch = backtest.plot_url;
-          const res = await fetch(urlFetch);
-          if (res && res.ok) {
-            const blob = await res.blob();
-            const url = URL.createObjectURL(blob);
-            if (mounted) setImgUrl(url);
-          }
-        } else {
-          const res = await api.backtestPlot({ backtest });
-          if (res && res.ok) {
-            const blob = await res.blob();
-            const url = URL.createObjectURL(blob);
-            if (mounted) setImgUrl(url);
-          }
-        }
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-    return () => { mounted = false; if (imgUrl) URL.revokeObjectURL(imgUrl); };
-  }, [backtest]);
-
   if (!backtest) {
     return (
       <div className="panel">
         <div className="panel-header"><span className="title">Backtest</span></div>
         <div className="panel-body">
-          <div className="muted">Run simulation to compare AI optimal vs actual {driver} strategy. Requires stint data in the session.</div>
+          <div className="muted">Run simulation to compare model strategy with recorded {driver} strategy. Requires stint data in the session.</div>
         </div>
       </div>
     );
@@ -1695,7 +1318,7 @@ function BacktestTab({ backtest, driver, circuit, race }: any) {
   return (
     <div className="detail-grid">
       <div className="panel span-full">
-        <div className="panel-header"><span className="title">Backtest</span> — AI vs Actual</div>
+        <div className="panel-header"><span className="title">Backtest</span> — Model vs recorded</div>
         <div className="panel-body">
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
             <div className="ev-block">
@@ -1704,7 +1327,7 @@ function BacktestTab({ backtest, driver, circuit, race }: any) {
               <div className="sub">Pits: {(backtest.actual.pit_laps || []).join(", ") || "none"} · {backtest.actual.total_time.toFixed(1)}s</div>
             </div>
             <div className="ev-block" style={{ borderLeft: "2px solid var(--red)" }}>
-              <div className="lbl">AI Optimal</div>
+              <div className="lbl">Model strategy</div>
               <div className="val" style={{ color: "var(--red)", fontSize: "0.95rem" }}>{backtest.optimal.strategy}</div>
               <div className="sub">Pits: {(backtest.optimal.pit_laps || []).join(", ")} · {backtest.optimal.total_time.toFixed(1)}s</div>
             </div>
@@ -1714,9 +1337,7 @@ function BacktestTab({ backtest, driver, circuit, race }: any) {
               <div className="sub">Actual was <strong style={{ color: dColor }}>{backtest.verdict}</strong></div>
             </div>
           </div>
-          {loading ? <div className="muted">Generating backtest plot…</div> : (
-            imgUrl ? <img src={imgUrl} alt="Backtest lap trace" style={{ width: "100%" }} /> : <LineChart series={traces} xLabel="Lap" yLabel="Lap time (s)" height={260} />
-          )}
+          <LineChart series={traces} xLabel="Lap" yLabel="Lap time (s)" height={260} />
         </div>
       </div>
       <BacktestReplay backtest={backtest} circuit={circuit} race={race} />
@@ -1776,7 +1397,7 @@ function lapProgressAt(cumTimes: number[], lapTimes: number[], t: number): { lap
 // visualization, not a frame-accurate telemetry replay (see docs/decisions.md
 // for the deliberate scope decision behind this vs full per-driver telemetry).
 // Generic two-car animated replay around the real circuit outline. Built
-// once here and reused by both BacktestReplay (Actual vs AI Optimal) and
+// once here and reused by both BacktestReplay (Actual vs Model strategy) and
 // RivalReplay (You vs a chosen rival) — the interpolation/animation logic
 // is identical between them, only the two lap-time series, labels, and
 // colors differ.
@@ -1943,11 +1564,11 @@ function BacktestReplay({ backtest, circuit, race }: any) {
   return (
     <RaceReplay
       title="Race Replay"
-      subtitle={`${race} — Actual vs AI Optimal`}
+      subtitle={`${race} — Actual vs Model strategy`}
       resetKey={backtest}
       circuit={circuit}
       aLabel="Actual" aLapTimes={backtest?.actual?.lap_times || []} aColor="#4c9be8"
-      bLabel="AI Optimal" bLapTimes={backtest?.optimal?.lap_times || []} bColor="#e8002d"
+      bLabel="Model strategy" bLapTimes={backtest?.optimal?.lap_times || []} bColor="#e8002d"
       emptyMessage="Backtest lap data unavailable for this driver/session."
     />
   );
@@ -1973,185 +1594,13 @@ function RivalReplay({ rivalResult, circuit, race, driver, rivalCode }: any) {
   );
 }
 
-function ResultsTab({ strategies, onExport, onExportBackend, ready }: any) {
-  return (
-    <div className="panel">
-      <div className="panel-header">
-        <span className="title">Full Results</span>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button className="btn-export" onClick={onExport} disabled={!ready}>⬇ Export CSV</button>
-          <button className="btn-export" onClick={onExportBackend} disabled={!ready}>⬇ Export CSV (backend)</button>
-        </div>
-      </div>
-      <div className="panel-body" style={{ overflowX: "auto" }}>
-        {!strategies.length ? <div className="muted">Run simulation first</div> : (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>#</th><th>Strategy</th><th>Pits</th><th>Mean</th><th>Std</th>
-                <th>P10</th><th>P50</th><th>P90</th><th>Win%</th>
-              </tr>
-            </thead>
-            <tbody>
-              {strategies.map((s: any) => (
-                <tr key={s.rank}>
-                  <td>{s.rank}</td>
-                  <td><CompoundSequence compounds={s.compound_sequence} /></td>
-                  <td>{(s.pit_laps || []).join(", ") || s.pit_count}</td>
-                  <td>{s.mean_time?.toFixed(2)}</td>
-                  <td>{s.std_time?.toFixed(2)}</td>
-                  <td>{s.p10?.toFixed(2)}</td>
-                  <td>{s.p50?.toFixed(2)}</td>
-                  <td>{s.p90?.toFixed(2)}</td>
-                  <td>{s.win_rate != null ? `${(s.win_rate * 100).toFixed(1)}%` : "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function TrackMap({ circuit, race, nodes, replayLaps = [] }: any) {
-  const points = circuit?.points ?? [];
-  const label = (circuit?.name || race || "CIRCUIT").toUpperCase();
-  const lapTimes: number[] = replayLaps.filter((value: unknown) => Number.isFinite(Number(value))).map(Number);
-  const cumulativeTimes = useMemo(() => {
-    const cumulative = [0];
-    for (const lapTime of lapTimes) cumulative.push(cumulative[cumulative.length - 1] + lapTime);
-    return cumulative;
-  }, [replayLaps]);
-  const totalDuration = cumulativeTimes[cumulativeTimes.length - 1] || 0;
-  const [elapsed, setElapsed] = useState(0);
-  const [playing, setPlaying] = useState(false);
-  const [speed, setSpeed] = useState(25);
-  const animationRef = useRef<number | null>(null);
-  const lastTimestampRef = useRef<number | null>(null);
-  const replayKey = lapTimes.join(",");
-
-  useEffect(() => {
-    setElapsed(0);
-    setPlaying(false);
-  }, [replayKey]);
-
-  useEffect(() => {
-    if (!playing || points.length < 2 || nodes.length === 0 || totalDuration <= 0) {
-      lastTimestampRef.current = null;
-      return;
-    }
-
-    const animate = (timestamp: number) => {
-      if (lastTimestampRef.current == null) lastTimestampRef.current = timestamp;
-      const elapsedSeconds = (timestamp - lastTimestampRef.current) / 1000;
-      lastTimestampRef.current = timestamp;
-      setElapsed((previous) => {
-        const next = previous + elapsedSeconds * speed;
-        if (next >= totalDuration) {
-          setPlaying(false);
-          return totalDuration;
-        }
-        return next;
-      });
-      animationRef.current = requestAnimationFrame(animate);
-    };
-
-    animationRef.current = requestAnimationFrame(animate);
-    return () => {
-      if (animationRef.current != null) cancelAnimationFrame(animationRef.current);
-      animationRef.current = null;
-      lastTimestampRef.current = null;
-    };
-  }, [nodes.length, playing, points.length, speed, totalDuration]);
-
-  let pathD = "";
-  if (points.length >= 2) {
-    pathD = `M ${points[0].x * 100} ${points[0].y * 100} ` +
-      points.slice(1).map((p: any) => `L ${p.x * 100} ${p.y * 100}`).join(" ");
-  }
-  return (
-    <div className="track-wrap">
-      {pathD ? (
-        <svg viewBox="0 0 100 100">
-          <path d={pathD} fill="none" stroke="#1a1a1a" strokeWidth="6" strokeLinejoin="round" />
-          <path d={pathD} fill="none" stroke="#2e2e2e" strokeWidth="3.5" strokeLinejoin="round" />
-          <path d={pathD} fill="none" stroke="#4a4a4a" strokeWidth="1.1" strokeLinejoin="round" />
-          {nodes.map((n: any, i: number) => {
-            const fieldOffset = totalDuration > 0 ? (i / Math.max(nodes.length, 1)) * totalDuration : 0;
-            const raceTime = totalDuration > 0 ? (elapsed + fieldOffset) % totalDuration : 0;
-            const state = totalDuration > 0 ? lapProgressAt(cumulativeTimes, lapTimes, raceTime) : { progress: 0 };
-            const position = interpolateAlongPath(points, state.progress);
-            const x = position.x;
-            const y = position.y;
-            const col = (n.compound && TYRE[n.compound.toUpperCase()]) || n.color || "#888";
-            return (
-              <g key={n.code}>
-                <circle cx={x * 100} cy={y * 100} r={n.selected ? 3 : 2.1} fill={col}
-                  stroke={n.selected ? "#fff" : undefined} strokeWidth={n.selected ? 0.7 : undefined} />
-                <text
-                  x={x * 100}
-                  y={y * 100 - (n.selected ? 5 : 3.8)}
-                  textAnchor="middle"
-                  fill={n.selected ? "#ffffff" : "#d0d0d0"}
-                  fontSize={n.selected ? "3.5" : "2.7"}
-                  fontFamily="Antonio,sans-serif"
-                  fontWeight={n.selected ? "700" : "600"}
-                  paintOrder="stroke"
-                  stroke="#080808"
-                  strokeWidth={n.selected ? "0.7" : "0.45"}
-                >{n.code}</text>
-              </g>
-            );
-          })}
-        </svg>
-      ) : (
-        <div className="muted" style={{ textAlign: "center", padding: "1rem" }}>
-          Circuit geometry from FastF1 when available
-        </div>
-      )}
-      <div className="track-caption">
-        <span className="flag-chip"><RaceFlag race={race} size={18} /><span>{label}</span></span>
-        <span>{nodes.length || "—"} NODES · {points.length || 0} PTS · {totalDuration > 0 ? `L${lapProgressAt(cumulativeTimes, lapTimes, elapsed).lap}/${lapTimes.length}` : "NO REPLAY"}</span>
-      </div>
-      {totalDuration > 0 && (
-        <div className="track-replay-controls">
-          <button
-            className="btn-export"
-            onClick={() => {
-              if (elapsed >= totalDuration) {
-                setElapsed(0);
-                lastTimestampRef.current = null;
-                setPlaying(true);
-              } else {
-                setPlaying((current) => !current);
-              }
-            }}
-          >
-            {playing ? "Pause" : elapsed >= totalDuration ? "Replay" : "Play"}
-          </button>
-          <input
-            type="range"
-            min={0}
-            max={totalDuration}
-            step={0.1}
-            value={Math.min(elapsed, totalDuration)}
-            aria-label="Track replay position"
-            onChange={(event) => {
-              setElapsed(Number(event.target.value));
-              setPlaying(false);
-              lastTimestampRef.current = null;
-            }}
-          />
-          <span className="muted replay-time">{elapsed.toFixed(0)}s</span>
-          <select value={speed} aria-label="Track replay speed" onChange={(event) => setSpeed(Number(event.target.value))}>
-            <option value={10}>10x</option>
-            <option value={25}>25x</option>
-            <option value={50}>50x</option>
-            <option value={100}>100x</option>
-          </select>
-        </div>
-      )}
-    </div>
-  );
+function ResultsTab({ strategies, onExport, ready }: { strategies: StrategyRow[]; onExport: () => void; ready: boolean }) {
+  const [filter, setFilter] = useState("all");
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(0);
+  const pageSize = 30;
+  const filtered = strategies.filter((row) => (filter === "all" || row.pit_laps.length === Number(filter)) && `${row.strategy} ${strategyCompounds(row).join(" ")} ${row.pit_laps.join(" ")}`.toLowerCase().includes(query.toLowerCase().trim()));
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const currentPage = Math.min(page, pageCount - 1);
+  return <section className="panel"><div className="panel-header"><span className="title">Ranked strategies</span><button className="btn-export" onClick={onExport} disabled={!ready}>Download all results CSV</button></div><div className="results-toolbar"><label>Search strategies<input type="search" value={query} placeholder="Compound or pit lap" onChange={(e) => { setQuery(e.target.value); setPage(0); }} /></label><label>Pit stops<select value={filter} onChange={(e) => { setFilter(e.target.value); setPage(0); }}><option value="all">All strategies</option><option value="1">One stop</option><option value="2">Two stops</option></select></label><span className="muted" role="status">{filtered.length.toLocaleString()} results · ranked by mean time</span></div><div className="table-scroll"><table className="data-table results-table"><caption className="sr-only">Strategy results. All time values are in seconds.</caption><thead><tr><th>Rank</th><th>Tyre sequence</th><th>Pit laps</th><th>Mean (s)</th><th>Std dev (s)</th><th>P10 (s)</th><th>Median (s)</th><th>P90 (s)</th><th>Win rate</th></tr></thead><tbody>{filtered.slice(currentPage * pageSize, (currentPage + 1) * pageSize).map((row) => <tr key={row.rank}><td>{row.rank}</td><td><CompoundSequence compounds={row.compound_sequence} strategy={row.strategy} /></td><td>{row.pit_laps.join(" / ") || "—"}</td><td>{row.mean_time?.toFixed(2) ?? "—"}</td><td>{row.std_time?.toFixed(2) ?? "—"}</td><td>{row.p10?.toFixed(2) ?? "—"}</td><td>{row.p50?.toFixed(2) ?? "—"}</td><td>{row.p90?.toFixed(2) ?? "—"}</td><td>{row.win_rate != null ? `${(row.win_rate * 100).toFixed(1)}%` : "—"}</td></tr>)}</tbody></table>{!filtered.length && <p className="empty-state">{strategies.length ? "No matching strategies. Try another compound or pit lap." : "Run a simulation to see ranked results."}</p>}</div><div className="pagination"><span>{filtered.length ? currentPage * pageSize + 1 : 0}–{Math.min((currentPage + 1) * pageSize, filtered.length)} of {filtered.length.toLocaleString()}</span><div><button className="btn-export" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>Previous</button><span>Page {currentPage + 1} of {pageCount}</span><button className="btn-export" disabled={currentPage + 1 >= pageCount} onClick={() => setPage(currentPage + 1)}>Next</button></div></div><p className="results-note">P10–P90 describes the simulated race-time range. Win rate compares tested strategies within the model; it is not the probability of winning the Grand Prix. CSV includes all strategies.</p></section>;
 }
