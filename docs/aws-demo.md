@@ -147,3 +147,7 @@ Mission Control UI again. F1 health passed, Tidewatch retained its process ID,
 all nginx site and Tidewatch unit hashes remained unchanged, and Tidewatch's
 original nginx health route remained operational. The temporary deployment
 SSH rule was removed after rollback.
+
+Public smoke checks passed for the frontend, health, bundled race/session, fresh
+simulation, CSV, rival analysis, and all four PNG plot endpoints. An initial
+HTTP 429 during rival analysis was followed by a successful complete retry.
